@@ -40,10 +40,38 @@ pip install -r requirements.txt
    - デフォルトの MAVLink 出力先（例）: `udp:127.0.0.1:14550`
    - 接続確認だけなら `mavproxy.py --master=udp:127.0.0.1:14550`
 
+## Webアプリ（住所→巡回をブラウザから）★チーム発表デモ
+
+ブラウザのUIから住所を入れるだけで、裏で ArduPilot(SITL) を起動・接続し、
+四角の外周巡回を AUTO で飛ばして、実テレメトリ（モード・高度・巡回進捗・姿勢・範囲・電池）を
+画面に表示する。追加ライブラリ不要（Python標準ライブラリのみ）。
+
+```bash
+# サーバを起動（SITLは住所の座標をホームに自動起動する）
+python3 src/server.py
+# → ブラウザで http://127.0.0.1:8000 を開く
+
+# （任意）先に SITL を --map 付きで起動しておき、それに接続する場合:
+#   別ターミナル: cd ~/GitHub/ardupilot && Tools/autotest/sim_vehicle.py -v ArduCopter --map
+DRONE_CONNECT=tcp:127.0.0.1:5760 python3 src/server.py
+```
+
+構成: ブラウザ(`ui/app.html`) → `src/server.py`(HTTP) → `src/flight_service.py` →
+dronekit/MAVLink → ArduPilot(SITL)。設計は `ui/mockup.html`（張りぼて版）を実データに置き換えたもの。
+
+## CLI（1コマンド体験）
+
+UIを使わず、コマンド1発で住所→巡回まで通すこともできる:
+
+```bash
+python3 src/plan_and_fly.py "名古屋城"
+```
+
 ## ディレクトリ構成
 
 ```
-src/        課題本体のコード
+src/        課題本体のコード（server.py / flight_service.py / patrol_spine.py / geocode.py / plan_and_fly.py）
+ui/         ブラウザUI（app.html=LIVE版, mockup.html=設計モック）
 examples/   SITL 接続サンプル
 docs/       ドキュメント（SITL 動作確認ログ含む）
 ```

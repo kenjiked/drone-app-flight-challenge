@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>みまわり自作ドローン（Webアプリ）</title>
+<style>
+  :root { --blue:#2563eb; --green:#16a34a; --amber:#d97706; --red:#dc2626; --bg:#eef2f7; --ink:#0f172a; --line:#e2e8f0; }
+  * { box-sizing:border-box; font-family:system-ui,"Hiragino Sans","Noto Sans JP",sans-serif; }
+  body { margin:0; background:var(--bg); color:var(--ink); }
+  header { background:#0f172a; color:#fff; padding:12px 20px; display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:18px; margin:0; }
+  header .badge { background:#bbf7d0; color:#166534; font-size:11px; padding:3px 8px; border-radius:6px; font-weight:700; }
+  header .conn { margin-left:auto; font-size:12px; color:#94a3b8; }
+  header .conn b { color:#4ade80; }
+  header .conn b.off { color:#f87171; }
+  .view { display:none; } .view.active { display:block; }
+
+  /* ---- ダッシュボード ---- */
+  .dash { max-width:1000px; margin:22px auto; padding:0 16px; }
+  .dash .top { display:flex; align-items:baseline; gap:12px; margin-bottom:14px; }
+  .dash h2 { margin:0; font-size:20px; } .dash .top p { color:#64748b; font-size:13px; margin:0; }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+  .scen { background:#fff; border:1px solid var(--line); border-radius:14px; padding:16px; display:flex; flex-direction:column; }
+  .scen .type { align-self:flex-start; font-size:11px; font-weight:700; padding:3px 9px; border-radius:999px; background:#dbeafe; color:#1e40af; }
+  .scen h3 { margin:10px 0 2px; font-size:16px; } .scen .place { color:#64748b; font-size:13px; margin:0 0 10px; }
+  .scen .status { font-size:12px; margin-bottom:12px; }
+  .scen .ok { color:#16a34a; } .scen .none { color:#94a3b8; }
+  .scen button { margin-top:auto; padding:11px; border:none; border-radius:10px; background:var(--green); color:#fff; font-weight:700; cursor:pointer; }
+  .scen.new { align-items:center; justify-content:center; border:2px dashed #cbd5e1; background:#f8fafc; cursor:pointer; color:#475569; font-weight:700; min-height:150px; }
+  .scen.new .plus { font-size:32px; line-height:1; }
+  .legend { color:#94a3b8; font-size:12px; margin-top:14px; }
+
+  /* ---- プランナー（地図＋パネル） ---- */
+  .back { max-width:1000px; margin:16px auto 0; padding:0 16px; }
+  .back a { color:var(--blue); font-size:13px; cursor:pointer; text-decoration:none; }
+  .wrap { max-width:1000px; margin:10px auto; padding:0 16px; display:grid; grid-template-columns:1.4fr 1fr; gap:18px; align-items:start; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:16px; overflow:hidden; }
+  .maparea { position:relative; }
+  .maparea svg { display:block; width:100%; height:380px; }
+  .maptag { position:absolute; top:10px; left:12px; background:rgba(255,255,255,.9); padding:5px 10px; border-radius:8px; font-size:12px; font-weight:600; }
+  .coordtag { position:absolute; bottom:10px; left:12px; background:rgba(15,23,42,.8); color:#e2e8f0; padding:4px 9px; border-radius:8px; font-size:11px; font-family:ui-monospace,monospace; }
+  .panel { padding:20px; min-height:380px; display:flex; flex-direction:column; }
+  .panel h2 { font-size:17px; margin:0 0 4px; } .panel .sub { color:#64748b; font-size:13px; margin:0 0 14px; }
+  label { font-weight:600; font-size:13px; }
+  input[type=text] { width:100%; padding:12px; font-size:15px; border:1px solid #cbd5e1; border-radius:10px; margin-top:6px; }
+  input[type=range] { width:100%; margin-top:8px; }
+  .btn { display:block; width:100%; padding:14px; font-size:15px; font-weight:700; border:none; border-radius:12px; color:#fff; background:var(--blue); margin-top:14px; cursor:pointer; }
+  .btn:disabled { opacity:.55; cursor:progress; }
+  .btn.green { background:var(--green); } .btn.ghost { background:#e2e8f0; color:#334155; } .btn.big { padding:20px; font-size:18px; }
+  .seg { display:flex; gap:8px; margin-top:8px; }
+  .seg button { flex:1; padding:10px; border-radius:10px; border:1px solid #cbd5e1; background:#fff; font-weight:600; cursor:pointer; }
+  .seg button.on { background:#dbeafe; border-color:var(--blue); color:#1e40af; }
+  .seg button:disabled { color:#94a3b8; background:#f8fafc; cursor:not-allowed; }
+  .check { display:flex; align-items:flex-start; gap:10px; padding:11px 13px; border-radius:11px; background:#f0fdf4; margin-top:9px; font-size:14px; }
+  .check.ng { background:#fef2f2; }
+  .check .i { flex:none; width:22px; height:22px; border-radius:50%; background:var(--green); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:13px; }
+  .check.ng .i { background:var(--red); }
+  .check .txt b { display:block; } .check .txt small { color:#64748b; }
+  .prog { height:12px; background:#e2e8f0; border-radius:8px; overflow:hidden; margin:12px 0; } .prog>div { height:100%; width:0%; background:var(--blue); transition:width .4s; }
+  .chips { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+  .chip { background:#dcfce7; color:#166534; padding:6px 11px; border-radius:999px; font-size:12px; font-weight:600; }
+  .chip.bad { background:#fee2e2; color:#991b1b; } .chip.wait { background:#f1f5f9; color:#64748b; }
+  .tele { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:14px; }
+  .tele div { background:#f8fafc; border:1px solid var(--line); border-radius:10px; padding:9px 11px; font-size:13px; }
+  .tele b { display:block; font-size:16px; margin-top:2px; }
+  .note { color:#94a3b8; font-size:12px; margin-top:10px; }
+  .phase { font-size:14px; color:#334155; margin:6px 0; min-height:20px; }
+  .steps { display:flex; gap:6px; margin-top:auto; padding-top:16px; } .dot { flex:1; height:5px; border-radius:3px; background:#e2e8f0; } .dot.on { background:var(--blue); }
+  .done { text-align:center; padding:24px 0; } .done .big { font-size:56px; }
+  .err { background:#fef2f2; border:1px solid #fecaca; color:#991b1b; padding:12px; border-radius:10px; font-size:13px; margin-top:10px; white-space:pre-wrap; }
+  .screen { display:none; flex:1; flex-direction:column; } .screen.active { display:flex; }
+  .archnote { max-width:1000px; margin:8px auto 24px; padding:10px 16px; color:#64748b; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>みまわり自作ドローン</h1><span class="badge">LIVE（ArduPilot連結）</span>
+  <span class="conn">ArduPilot SITL … <b id="connState" class="off">● 未接続</b></span>
+</header>
+
+<!-- ========== 管理画面（ダッシュボード）＝入口 ========== -->
+<div class="view active" id="view-dashboard">
+  <div class="dash">
+    <div class="top"><h2>みまわり一覧</h2><p>登録したみまわりを実行・管理できます</p></div>
+    <div class="grid">
+      <div class="scen">
+        <span class="type">外周巡回</span><h3>名古屋城 外周みまわり</h3>
+        <p class="place">名古屋市中区 / 一辺160m・高さ25m</p>
+        <p class="status ok">前回：✅ 正常完了</p>
+        <button onclick="openPlanner('名古屋城')">▶ 実行</button>
+      </div>
+      <div class="scen">
+        <span class="type">外周巡回</span><h3>東京駅 周辺みまわり</h3>
+        <p class="place">千代田区 / 毎朝の見回り</p>
+        <p class="status ok">前回：✅ 正常完了</p>
+        <button onclick="openPlanner('東京駅')">▶ 実行</button>
+      </div>
+      <div class="scen">
+        <span class="type">敷地チェック</span><h3>大阪駅 敷地チェック</h3>
+        <p class="place">梅田 / 週次点検</p>
+        <p class="status none">未実行</p>
+        <button onclick="openPlanner('大阪駅')">▶ 実行</button>
+      </div>
+      <div class="scen new" onclick="openPlanner('')">
+        <div class="plus">＋</div><div>新しいみまわりを作る</div>
+      </div>
+    </div>
+    <p class="legend">シナリオの種類（今後）：外周巡回 ／ 塗りつぶし調査（近日）／ 地点めぐり（近日）。用途ごとに増やせます。</p>
+  </div>
+</div>
+
+<!-- ========== プランナー（地図＋ウィザード） ========== -->
+<div class="view" id="view-planner">
+  <div class="back"><a onclick="openDashboard()">← みまわり一覧に戻る</a></div>
+  <div class="wrap">
+    <div class="card maparea">
+      <div class="maptag" id="maptag">地図</div>
+      <div class="coordtag" id="coordtag" style="display:none"></div>
+      <svg viewBox="0 0 600 380">
+        <rect width="600" height="380" fill="#e8f0e8"/>
+        <path d="M0 95 H600 M0 190 H600 M0 285 H600 M120 0 V380 M300 0 V380 M470 0 V380" stroke="#cddacd" stroke-width="2"/>
+        <rect id="route" x="230" y="120" width="140" height="140" fill="rgba(37,99,235,.08)" stroke="#2563eb" stroke-width="3" stroke-dasharray="8 5" visibility="hidden"/>
+        <circle id="pin" cx="300" cy="190" r="7" fill="#dc2626" visibility="hidden"/>
+        <text id="pinlabel" x="300" y="174" text-anchor="middle" font-size="13" fill="#0f172a" visibility="hidden"></text>
+        <circle id="drone" cx="300" cy="190" r="8" fill="#16a34a" stroke="#fff" stroke-width="3" visibility="hidden"/>
+      </svg>
+    </div>
+    <div class="card panel">
+      <!-- 1 住所 -->
+      <div class="screen active" id="s1">
+        <h2>① 見回る場所を探す</h2><p class="sub">住所や地名を入れるだけ。</p>
+        <label>どこを見回りますか？</label>
+        <input id="addr" type="text" value="名古屋城" placeholder="住所や地名">
+        <button class="btn" id="btnFind" onclick="findPlace()">この場所を探す</button>
+        <p class="note" id="findNote">例）「名古屋城」「東京駅」「大阪駅」</p>
+        <div class="steps"><i class="dot on"></i><i class="dot"></i><i class="dot"></i><i class="dot"></i><i class="dot"></i><i class="dot"></i></div>
+      </div>
+      <!-- 2 ルート作成 -->
+      <div class="screen" id="s2">
+        <h2>② 巡回ルートを作る</h2><p class="sub">形とサイズを決めます。地図に反映されます。</p>
+        <label>ルートの形</label>
+        <div class="seg"><button class="on">四角</button><button disabled>多角形をなぞる（近日）</button></div>
+        <label style="display:block; margin-top:14px;">大きさ（一辺）：<b id="sizeval">160</b> m</label>
+        <input id="size" type="range" min="60" max="260" value="160" oninput="resize()">
+        <label style="display:block; margin-top:10px;">高さ：<b id="altval">25</b> m</label>
+        <input id="alt" type="range" min="10" max="60" value="25" oninput="document.getElementById('altval').textContent=this.value">
+        <button class="btn green" onclick="goPrecheck()">このルートで確定</button>
+        <button class="btn ghost" onclick="go(1)">場所を変える</button>
+        <p class="note">今は四角のみ。将来は地図をなぞって畑の形そのままに。</p>
+        <div class="steps"><i class="dot on"></i><i class="dot on"></i><i class="dot"></i><i class="dot"></i><i class="dot"></i><i class="dot"></i></div>
+      </div>
+      <!-- 3 飛行前チェック -->
+      <div class="screen" id="s3">
+        <h2>③ 飛ばす前の安全チェック</h2><p class="sub">無理な計画は、飛ばす前に止めます。</p>
+        <div id="checks"><p class="note">チェック中…</p></div>
+        <button class="btn green" id="btnFly" onclick="go(4)">安全確認OK・次へ</button>
+        <button class="btn ghost" onclick="go(2)">ルートを見直す</button>
+        <p class="note">電池・範囲・高さを実際の数値で判定します（親切版の安全機構）。</p>
+        <div class="steps"><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot"></i><i class="dot"></i><i class="dot"></i></div>
+      </div>
+      <!-- 4 実行 -->
+      <div class="screen" id="s4">
+        <h2>④ 実行</h2><p class="sub">ボタンひとつで、みまわり開始。</p>
+        <button class="btn big green" id="btnStart" onclick="startFlight()">▶ みまわりを開始</button>
+        <button class="btn ghost" onclick="go(2)">ルートを見直す</button>
+        <p class="note">裏でArduPilotにミッションを送り、AUTOで飛行します。<br>（SITLの自動起動に約30秒かかります）</p>
+        <div class="steps"><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot"></i><i class="dot"></i></div>
+      </div>
+      <!-- 5 飛行中 -->
+      <div class="screen" id="s5">
+        <h2>⑤ みまわり中…</h2>
+        <div class="phase" id="phaseMsg">準備中…</div>
+        <div class="prog"><div id="progbar"></div></div>
+        <p style="font-size:15px; margin:4px 0;">巡回 <b id="wpText">0 / 4</b> 地点</p>
+        <div class="chips" id="chips">
+          <span class="chip wait" id="chipAtt">姿勢 —</span>
+          <span class="chip wait" id="chipRange">範囲 —</span>
+          <span class="chip wait" id="chipBatt">電池 —</span>
+        </div>
+        <div class="tele">
+          <div>モード<b id="teleMode">—</b></div>
+          <div>高度<b id="teleAlt">—</b></div>
+          <div>次の地点まで<b id="teleDist">—</b></div>
+          <div>電池<b id="teleBatt">—</b></div>
+        </div>
+        <button class="btn ghost" onclick="stopFlight()">中止して帰還（RTL）</button>
+        <div class="steps"><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot"></i></div>
+      </div>
+      <!-- 6 完了 -->
+      <div class="screen" id="s6">
+        <div class="done"><div class="big" id="doneIcon">✅</div><h2 id="doneTitle">みまわり完了</h2><p class="sub" id="doneSub">ドローンは無事に戻りました。</p></div>
+        <div id="doneErr"></div>
+        <button class="btn green" onclick="openDashboard()">一覧に戻る</button>
+        <div class="steps"><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i></div>
+      </div>
+    </div>
+  </div>
+  <p class="archnote">構成（LIVE）：ブラウザ（このUI）→ server.py(HTTP) → dronekit/MAVLink → ArduPilot(SITL)。住所→座標→四角ミッション→AUTO飛行→帰還を実データで表示。※フライトコード側も最適化・拡張していく。</p>
+</div>
+
+<script>
+  let cur = 1;
+  let geo = null;           // 直近のジオコード結果 {lat, lon, source, address}
+  let statusTimer = null;   // ⑤ のポーリング
+
+  async function api(path, body) {
+    const opt = body ? { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) }
+                     : { method:"GET" };
+    const r = await fetch(path, opt);
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    return j;
+  }
+
+  // ---- 画面遷移 ----
+  function openDashboard(){
+    stopPolling();
+    document.getElementById('view-planner').classList.remove('active');
+    document.getElementById('view-dashboard').classList.add('active');
+    window.scrollTo(0,0);
+  }
+  function openPlanner(addr){
+    document.getElementById('view-dashboard').classList.remove('active');
+    document.getElementById('view-planner').classList.add('active');
+    if(addr !== undefined) document.getElementById('addr').value = addr;
+    geo = null;
+    document.getElementById('s'+cur).classList.remove('active'); cur=1;
+    document.getElementById('s1').classList.add('active');
+    document.getElementById('pin').setAttribute('visibility','hidden');
+    document.getElementById('pinlabel').setAttribute('visibility','hidden');
+    document.getElementById('route').setAttribute('visibility','hidden');
+    document.getElementById('drone').setAttribute('visibility','hidden');
+    document.getElementById('maptag').textContent='地図';
+    document.getElementById('coordtag').style.display='none';
+    document.getElementById('findNote').textContent='例）「名古屋城」「東京駅」「大阪駅」';
+    window.scrollTo(0,0);
+  }
+
+  // ---- ① 住所→座標（実ジオコーディング） ----
+  async function findPlace(){
+    const addr = (document.getElementById('addr').value||'').trim();
+    if(!addr){ return; }
+    const btn = document.getElementById('btnFind');
+    btn.disabled = true; btn.textContent = '検索中…';
+    try{
+      geo = await api('/api/geocode', { address: addr });
+      geo.address = addr;
+      showPin(addr, geo);
+      document.getElementById('findNote').textContent =
+        '見つかりました：' + geo.lat.toFixed(5) + ', ' + geo.lon.toFixed(5) +
+        '（' + (geo.source==='online'?'オンライン':'内蔵データ') + '）';
+      go(2);
+    }catch(e){
+      document.getElementById('findNote').textContent = '見つかりませんでした：' + e.message;
+    }finally{
+      btn.disabled = false; btn.textContent = 'この場所を探す';
+    }
+  }
+
+  function showPin(addr, g){
+    document.getElementById('pin').setAttribute('visibility','visible');
+    const t=document.getElementById('pinlabel'); t.setAttribute('visibility','visible'); t.textContent=addr||'指定地点';
+    document.getElementById('maptag').textContent=addr||'地図';
+    if(g){
+      const c=document.getElementById('coordtag');
+      c.style.display='block';
+      c.textContent = g.lat.toFixed(6) + ', ' + g.lon.toFixed(6);
+    }
+  }
+  function showRoute(){ document.getElementById('route').setAttribute('visibility','visible'); resize(); }
+  function resize(){
+    const m=+document.getElementById('size').value; document.getElementById('sizeval').textContent=m;
+    const px=m*1.1, r=document.getElementById('route');
+    r.setAttribute('x',300-px/2); r.setAttribute('y',190-px/2); r.setAttribute('width',px); r.setAttribute('height',px);
+  }
+
+  // ---- ③ 実チェック ----
+  async function goPrecheck(){
+    go(3);
+    const side=+document.getElementById('size').value, alt=+document.getElementById('alt').value;
+    const box=document.getElementById('checks');
+    const btn=document.getElementById('btnFly');
+    box.innerHTML='<p class="note">チェック中…</p>';
+    btn.disabled=true;
+    try{
+      const res=await api('/api/precheck',{ side, alt });
+      box.innerHTML='';
+      for(const key of ['battery','range','altitude']){
+        const c=res.checks[key];
+        const div=document.createElement('div');
+        div.className='check'+(c.ok?'':' ng');
+        div.innerHTML='<span class="i">'+(c.ok?'✓':'!')+'</span>'+
+          '<span class="txt"><b>'+c.label+'</b><small>'+c.detail+'</small></span>';
+        box.appendChild(div);
+      }
+      btn.disabled=!res.ok;
+      btn.textContent=res.ok?'安全確認OK・次へ':'⚠ 計画を見直してください';
+    }catch(e){
+      box.innerHTML='<div class="err">チェック失敗：'+e.message+'</div>';
+    }
+  }
+
+  // ---- ④ 開始 ----
+  async function startFlight(){
+    const side=+document.getElementById('size').value, alt=+document.getElementById('alt').value;
+    const btn=document.getElementById('btnStart');
+    btn.disabled=true; btn.textContent='開始しています…';
+    const body={ side, alt };
+    if(geo){ body.address=geo.address; body.lat=geo.lat; body.lon=geo.lon; }
+    else{ body.address=(document.getElementById('addr').value||'').trim(); }
+    try{
+      await api('/api/start', body);
+      go(5);
+      startPolling();
+    }catch(e){
+      alert('開始に失敗：'+e.message);
+    }finally{
+      btn.disabled=false; btn.textContent='▶ みまわりを開始';
+    }
+  }
+
+  async function stopFlight(){
+    try{ await api('/api/stop', {}); }catch(e){}
+  }
+
+  // ---- ⑤ ポーリングで実テレメトリ表示 ----
+  function startPolling(){ stopPolling(); statusTimer=setInterval(pollStatus, 1000); pollStatus(); }
+  function stopPolling(){ if(statusTimer){ clearInterval(statusTimer); statusTimer=null; } }
+
+  const PHASE_TEXT={
+    geocoding:'住所を座標に変換中…', launching:'シミュレータを起動中…（約30秒）',
+    connecting:'ArduPilotに接続中…', prearm:'機体の準備(GPS/EKF)を待機中…',
+    takeoff:'離陸中…', patrol:'みまわり中…', rtl:'帰還中(RTL)…',
+    done:'完了', error:'エラー', idle:'待機中'
+  };
+
+  function updateConn(s){
+    const el=document.getElementById('connState');
+    if(s.connected){ el.className=''; el.textContent='● 接続中'+(s.mode?'（'+s.mode+'）':''); }
+    else{ el.className='off'; el.textContent='● 未接続'; }
+  }
+
+  async function pollStatus(){
+    let s;
+    try{ s=await api('/api/status'); }catch(e){ return; }
+    updateConn(s);
+
+    document.getElementById('phaseMsg').textContent = s.message || PHASE_TEXT[s.phase] || '';
+
+    // 進捗バー：フェーズと巡回地点から
+    const phaseWeight={geocoding:5,launching:15,connecting:30,prearm:40,takeoff:50,patrol:60,rtl:92,done:100,error:100};
+    let pct=phaseWeight[s.phase]||0;
+    if(s.phase==='patrol'){ pct=60 + 30*(s.wp_index/(s.wp_total||4)); }
+    document.getElementById('progbar').style.width=pct+'%';
+
+    document.getElementById('wpText').textContent=(s.wp_index||0)+' / '+(s.wp_total||4);
+
+    setChip('chipAtt','姿勢', s.attitude_ok);
+    setChip('chipRange','範囲', s.in_range);
+    setChip('chipBatt','電池', s.battery_ok);
+
+    document.getElementById('teleMode').textContent=s.mode||'—';
+    document.getElementById('teleAlt').textContent=(s.alt!=null?s.alt.toFixed(1)+' m':'—');
+    document.getElementById('teleDist').textContent=(s.wp_distance!=null?Math.round(s.wp_distance)+' m':'—');
+    document.getElementById('teleBatt').textContent=(s.battery!=null?s.battery+' %':'—');
+
+    // 地図上の機体マーカー（範囲内でだけ簡易に動かす）
+    if(s.phase==='patrol'||s.phase==='takeoff'||s.phase==='rtl'){
+      const d=document.getElementById('drone'); d.setAttribute('visibility','visible');
+      const corners=[[230,120],[370,120],[370,260],[230,260]];
+      const p=corners[Math.max(0,(s.wp_index||1)-1)%4];
+      d.setAttribute('cx',p[0]); d.setAttribute('cy',p[1]);
+    }
+
+    if(s.phase==='done'){ stopPolling(); showDone(s); }
+    else if(s.phase==='error'){ stopPolling(); showDone(s); }
+  }
+
+  function setChip(id,label,ok){
+    const el=document.getElementById(id);
+    if(ok===true){ el.className='chip'; el.textContent=label+' OK'; }
+    else if(ok===false){ el.className='chip bad'; el.textContent=label+' 注意'; }
+    else{ el.className='chip wait'; el.textContent=label+' —'; }
+  }
+
+  function showDone(s){
+    const err=(s.phase==='error');
+    document.getElementById('doneIcon').textContent=err?'⚠️':'✅';
+    document.getElementById('doneTitle').textContent=err?'途中で停止しました':'みまわり完了';
+    document.getElementById('doneSub').textContent=err?'':'ドローンは無事に戻りました。';
+    document.getElementById('doneErr').innerHTML=err?('<div class="err">'+(s.message||'')+'</div>'):'';
+    go(6);
+  }
+
+  // ---- 汎用ステップ移動 ----
+  function go(n){
+    document.getElementById('s'+cur).classList.remove('active');
+    if(n>=2){ if(geo) showPin(document.getElementById('addr').value, geo); showRoute(); }
+    cur=n; document.getElementById('s'+cur).classList.add('active'); window.scrollTo(0,0);
+  }
+
+  // 起動時に一度、接続状態を確認
+  (async function(){ try{ updateConn(await api('/api/status')); }catch(e){} })();
+</script>
+</body>
+</html>
