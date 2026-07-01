@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>みまわり自作ドローン（Webアプリ）</title>
+<!-- 地図: Leaflet + OpenStreetMap（実地図をブラウザに表示） -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <style>
   :root { --blue:#2563eb; --green:#16a34a; --amber:#d97706; --red:#dc2626; --bg:#eef2f7; --ink:#0f172a; --line:#e2e8f0; }
   * { box-sizing:border-box; font-family:system-ui,"Hiragino Sans","Noto Sans JP",sans-serif; }
@@ -37,10 +42,11 @@
   .wrap { max-width:1000px; margin:10px auto; padding:0 16px; display:grid; grid-template-columns:1.4fr 1fr; gap:18px; align-items:start; }
   .card { background:#fff; border:1px solid var(--line); border-radius:16px; overflow:hidden; }
   .maparea { position:relative; }
-  .maparea svg { display:block; width:100%; height:380px; }
-  .maptag { position:absolute; top:10px; left:12px; background:rgba(255,255,255,.9); padding:5px 10px; border-radius:8px; font-size:12px; font-weight:600; }
-  .coordtag { position:absolute; bottom:10px; left:12px; background:rgba(15,23,42,.8); color:#e2e8f0; padding:4px 9px; border-radius:8px; font-size:11px; font-family:ui-monospace,monospace; }
-  .panel { padding:20px; min-height:380px; display:flex; flex-direction:column; }
+  #map { width:100%; height:420px; background:#e8f0e8; z-index:1; }
+  .maptag { position:absolute; top:10px; left:12px; z-index:500; background:rgba(255,255,255,.92); padding:5px 10px; border-radius:8px; font-size:12px; font-weight:600; box-shadow:0 1px 4px rgba(0,0,0,.15); }
+  .coordtag { position:absolute; bottom:10px; left:12px; z-index:500; background:rgba(15,23,42,.8); color:#e2e8f0; padding:4px 9px; border-radius:8px; font-size:11px; font-family:ui-monospace,monospace; }
+  .droneicon { font-size:22px; line-height:22px; text-align:center; filter:drop-shadow(0 1px 2px rgba(0,0,0,.4)); }
+  .panel { padding:20px; min-height:420px; display:flex; flex-direction:column; }
   .panel h2 { font-size:17px; margin:0 0 4px; } .panel .sub { color:#64748b; font-size:13px; margin:0 0 14px; }
   label { font-weight:600; font-size:13px; }
   input[type=text] { width:100%; padding:12px; font-size:15px; border:1px solid #cbd5e1; border-radius:10px; margin-top:6px; }
@@ -117,14 +123,7 @@
     <div class="card maparea">
       <div class="maptag" id="maptag">地図</div>
       <div class="coordtag" id="coordtag" style="display:none"></div>
-      <svg viewBox="0 0 600 380">
-        <rect width="600" height="380" fill="#e8f0e8"/>
-        <path d="M0 95 H600 M0 190 H600 M0 285 H600 M120 0 V380 M300 0 V380 M470 0 V380" stroke="#cddacd" stroke-width="2"/>
-        <rect id="route" x="230" y="120" width="140" height="140" fill="rgba(37,99,235,.08)" stroke="#2563eb" stroke-width="3" stroke-dasharray="8 5" visibility="hidden"/>
-        <circle id="pin" cx="300" cy="190" r="7" fill="#dc2626" visibility="hidden"/>
-        <text id="pinlabel" x="300" y="174" text-anchor="middle" font-size="13" fill="#0f172a" visibility="hidden"></text>
-        <circle id="drone" cx="300" cy="190" r="8" fill="#16a34a" stroke="#fff" stroke-width="3" visibility="hidden"/>
-      </svg>
+      <div id="map"></div>
     </div>
     <div class="card panel">
       <!-- 1 住所 -->
@@ -196,13 +195,44 @@
       </div>
     </div>
   </div>
-  <p class="archnote">構成（LIVE）：ブラウザ（このUI）→ server.py(HTTP) → dronekit/MAVLink → ArduPilot(SITL)。住所→座標→四角ミッション→AUTO飛行→帰還を実データで表示。※フライトコード側も最適化・拡張していく。</p>
+  <p class="archnote">構成（LIVE）：ブラウザ（このUI・実地図）→ server.py(HTTP) → dronekit/MAVLink → ArduPilot(SITL)。住所→座標→四角ミッション→AUTO飛行→帰還を、実地図と実テレメトリで表示。</p>
 </div>
 
 <script>
   let cur = 1;
   let geo = null;           // 直近のジオコード結果 {lat, lon, source, address}
   let statusTimer = null;   // ⑤ のポーリング
+
+  // ---- 地図(Leaflet) ----
+  let map=null, centerMarker=null, routeLayer=null, droneMarker=null, trailLine=null;
+  let trailPts=[];
+  const HAS_LEAFLET = (typeof L !== 'undefined');
+  const DRONE_ICON = HAS_LEAFLET ? L.divIcon({className:'', html:'<div class="droneicon">🚁</div>', iconSize:[22,22], iconAnchor:[11,11]}) : null;
+
+  function ensureMap(){
+    if(map || !HAS_LEAFLET) return;   // Leaflet未読込(オフライン)ならUIだけ動かす
+    map = L.map('map', { zoomControl:true, attributionControl:true }).setView([35.1853,136.8992], 16);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom:19, attribution:'© OpenStreetMap contributors'
+    }).addTo(map);
+  }
+
+  // 中心(緯度経度)から北へdN・東へdE[m]ずらした[lat,lon]（patrol_spineと同式）
+  function metresToLatLng(lat, lon, dN, dE){
+    const R=6378137.0;
+    const dLat=dN/R, dLon=dE/(R*Math.cos(Math.PI*lat/180));
+    return [lat + dLat*180/Math.PI, lon + dLon*180/Math.PI];
+  }
+  // 中心＋一辺(m)から四角の4角[lat,lon]（build_patrol_missionと同順）
+  function squareCorners(lat, lon, side){
+    const h=side/2;
+    return [
+      metresToLatLng(lat,lon, h,-h),
+      metresToLatLng(lat,lon, h, h),
+      metresToLatLng(lat,lon,-h, h),
+      metresToLatLng(lat,lon,-h,-h),
+    ];
+  }
 
   async function api(path, body) {
     const opt = body ? { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) }
@@ -227,14 +257,23 @@
     geo = null;
     document.getElementById('s'+cur).classList.remove('active'); cur=1;
     document.getElementById('s1').classList.add('active');
-    document.getElementById('pin').setAttribute('visibility','hidden');
-    document.getElementById('pinlabel').setAttribute('visibility','hidden');
-    document.getElementById('route').setAttribute('visibility','hidden');
-    document.getElementById('drone').setAttribute('visibility','hidden');
     document.getElementById('maptag').textContent='地図';
     document.getElementById('coordtag').style.display='none';
     document.getElementById('findNote').textContent='例）「名古屋城」「東京駅」「大阪駅」';
+    // 地図の後片付け
+    clearMapOverlays();
+    // 表示直後は地図のサイズが0なので、可視化してからサイズ再計算
+    ensureMap();
+    setTimeout(()=>{ map.invalidateSize(); }, 80);
     window.scrollTo(0,0);
+  }
+
+  function clearMapOverlays(){
+    trailPts=[];
+    for(const lyr of [centerMarker, routeLayer, droneMarker, trailLine]){
+      if(lyr && map) map.removeLayer(lyr);
+    }
+    centerMarker=routeLayer=droneMarker=trailLine=null;
   }
 
   // ---- ① 住所→座標（実ジオコーディング） ----
@@ -259,20 +298,33 @@
   }
 
   function showPin(addr, g){
-    document.getElementById('pin').setAttribute('visibility','visible');
-    const t=document.getElementById('pinlabel'); t.setAttribute('visibility','visible'); t.textContent=addr||'指定地点';
-    document.getElementById('maptag').textContent=addr||'地図';
-    if(g){
-      const c=document.getElementById('coordtag');
-      c.style.display='block';
-      c.textContent = g.lat.toFixed(6) + ', ' + g.lon.toFixed(6);
-    }
+    if(!g) return;
+    ensureMap();
+    document.getElementById('maptag').textContent=addr||'指定地点';
+    const c=document.getElementById('coordtag');
+    c.style.display='block';
+    c.textContent = g.lat.toFixed(6) + ', ' + g.lon.toFixed(6);
+    if(centerMarker) map.removeLayer(centerMarker);
+    centerMarker = L.marker([g.lat, g.lon]).addTo(map).bindPopup(addr||'指定地点');
+    map.setView([g.lat, g.lon], 16);
+    setTimeout(()=>{ map.invalidateSize(); }, 60);
   }
-  function showRoute(){ document.getElementById('route').setAttribute('visibility','visible'); resize(); }
+
+  // ルートの四角を地図に描く（プランニング中はクライアント計算）
+  function showRoute(){
+    if(!geo) return;
+    ensureMap();
+    const side=+document.getElementById('size').value;
+    drawRoute(squareCorners(geo.lat, geo.lon, side));
+  }
+  function drawRoute(corners){
+    if(routeLayer) map.removeLayer(routeLayer);
+    routeLayer = L.polygon(corners, {color:'#2563eb', weight:3, dashArray:'8 5', fillColor:'#2563eb', fillOpacity:.08}).addTo(map);
+    map.fitBounds(routeLayer.getBounds().pad(0.6));
+  }
   function resize(){
-    const m=+document.getElementById('size').value; document.getElementById('sizeval').textContent=m;
-    const px=m*1.1, r=document.getElementById('route');
-    r.setAttribute('x',300-px/2); r.setAttribute('y',190-px/2); r.setAttribute('width',px); r.setAttribute('height',px);
+    document.getElementById('sizeval').textContent=+document.getElementById('size').value;
+    showRoute();
   }
 
   // ---- ③ 実チェック ----
@@ -311,6 +363,7 @@
     else{ body.address=(document.getElementById('addr').value||'').trim(); }
     try{
       await api('/api/start', body);
+      trailPts=[];
       go(5);
       startPolling();
     }catch(e){
@@ -324,7 +377,7 @@
     try{ await api('/api/stop', {}); }catch(e){}
   }
 
-  // ---- ⑤ ポーリングで実テレメトリ表示 ----
+  // ---- ⑤ ポーリングで実テレメトリ＋実地図表示 ----
   function startPolling(){ stopPolling(); statusTimer=setInterval(pollStatus, 1000); pollStatus(); }
   function stopPolling(){ if(statusTimer){ clearInterval(statusTimer); statusTimer=null; } }
 
@@ -348,7 +401,6 @@
 
     document.getElementById('phaseMsg').textContent = s.message || PHASE_TEXT[s.phase] || '';
 
-    // 進捗バー：フェーズと巡回地点から
     const phaseWeight={geocoding:5,launching:15,connecting:30,prearm:40,takeoff:50,patrol:60,rtl:92,done:100,error:100};
     let pct=phaseWeight[s.phase]||0;
     if(s.phase==='patrol'){ pct=60 + 30*(s.wp_index/(s.wp_total||4)); }
@@ -365,17 +417,31 @@
     document.getElementById('teleDist').textContent=(s.wp_distance!=null?Math.round(s.wp_distance)+' m':'—');
     document.getElementById('teleBatt').textContent=(s.battery!=null?s.battery+' %':'—');
 
-    // 地図上の機体マーカー（範囲内でだけ簡易に動かす）
-    if(s.phase==='patrol'||s.phase==='takeoff'||s.phase==='rtl'){
-      const d=document.getElementById('drone'); d.setAttribute('visibility','visible');
-      const corners=[[230,120],[370,120],[370,260],[230,260]];
-      const p=corners[Math.max(0,(s.wp_index||1)-1)%4];
-      d.setAttribute('cx',p[0]); d.setAttribute('cy',p[1]);
-    }
+    updateFlightMap(s);
 
-    if(s.phase==='done'){ stopPolling(); showDone(s); }
-    else if(s.phase==='error'){ stopPolling(); showDone(s); }
+    if(s.phase==='done' || s.phase==='error'){ stopPolling(); showDone(s); }
   }
+
+  // 実地図に、実ルート(角)と機体の実位置(緯度経度)を描く
+  function updateFlightMap(s){
+    if(!map) return;
+    // バックエンドが実際の巡回ルートを返したら、それで上書き
+    if(s.corners && s.corners.length===4 && !routeLayer_isServer){
+      drawRoute(s.corners); routeLayer_isServer=true;
+    }
+    if(s.veh_lat!=null && s.veh_lon!=null){
+      const p=[s.veh_lat, s.veh_lon];
+      if(!droneMarker){ droneMarker = L.marker(p, DRONE_ICON?{icon:DRONE_ICON}:{}).addTo(map); }
+      else{ droneMarker.setLatLng(p); }
+      // 軌跡
+      trailPts.push(p);
+      if(trailPts.length>2){
+        if(!trailLine){ trailLine=L.polyline(trailPts, {color:'#16a34a', weight:2, opacity:.7}).addTo(map); }
+        else{ trailLine.setLatLngs(trailPts); }
+      }
+    }
+  }
+  let routeLayer_isServer=false;
 
   function setChip(id,label,ok){
     const el=document.getElementById(id);
@@ -396,7 +462,8 @@
   // ---- 汎用ステップ移動 ----
   function go(n){
     document.getElementById('s'+cur).classList.remove('active');
-    if(n>=2){ if(geo) showPin(document.getElementById('addr').value, geo); showRoute(); }
+    if(n>=2 && geo){ showPin(document.getElementById('addr').value, geo); showRoute(); }
+    if(n===5){ routeLayer_isServer=false; }
     cur=n; document.getElementById('s'+cur).classList.add('active'); window.scrollTo(0,0);
   }
 

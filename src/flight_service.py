@@ -32,6 +32,7 @@ from patrol_spine import (
     build_patrol_mission,
     distance_to_current_waypoint,
     get_distance_metres,
+    get_location_metres,
 )
 from plan_and_fly import launch_sitl, stop_sitl, wait_for_port, SIM_HOST, SIM_PORT, CONNECT_STR
 
@@ -65,8 +66,11 @@ class FlightManager(object):
             "phase": "idle",        # idle/geocoding/launching/connecting/prearm/takeoff/patrol/rtl/done/error
             "message": "待機中",
             "address": None,
-            "lat": None,
-            "lon": None,
+            "lat": None,          # 巡回中心(=住所)の緯度
+            "lon": None,          # 巡回中心(=住所)の経度
+            "veh_lat": None,      # 機体の現在緯度(飛行中に更新)
+            "veh_lon": None,      # 機体の現在経度(飛行中に更新)
+            "corners": None,      # 巡回ルート(四角)の角の[lat,lon]リスト
             "geocode_source": None,
             "side_m": DEFAULT_SIDE_M,
             "alt_m": DEFAULT_ALT_M,
@@ -218,6 +222,10 @@ class FlightManager(object):
             if not self._stop_flag:
                 self._set(phase="done", message="みまわり完了。無事に戻りました。",
                           finished_at=time.time())
+            else:
+                # ユーザーが途中で中止 → 帰還させて終了(終端フェーズにする)
+                self._set(phase="done", message="中止しました。ドローンは帰還しました。",
+                          finished_at=time.time())
         except Exception as e:
             self._set(phase="error",
                       message="エラー: %s" % e,
@@ -242,6 +250,16 @@ class FlightManager(object):
         # ミッション生成(四角の外周) + アップロード
         self._set(message="巡回ルートをアップロード中…")
         num_corners = build_patrol_mission(vehicle, center, half, alt_m)
+
+        # 地図描画用に、実際の巡回ルート(四角の角)の緯度経度を状態へ入れる
+        # ※ build_patrol_mission と同じ順序・同じ座標にする
+        corner_locs = [
+            get_location_metres(center,  half, -half),
+            get_location_metres(center,  half,  half),
+            get_location_metres(center, -half,  half),
+            get_location_metres(center, -half, -half),
+        ]
+        self._set(corners=[[c.lat, c.lon] for c in corner_locs])
 
         # アーム→離陸
         self._set(phase="takeoff", message="離陸中…")
@@ -297,12 +315,14 @@ class FlightManager(object):
             loc = vehicle.location.global_relative_frame
             alt = loc.alt if loc and loc.alt is not None else 0.0
 
-            # 範囲チェック: 中心からの距離が半径(対角+余裕)以内か
+            # 範囲チェック + 地図用の機体現在地
             gframe = vehicle.location.global_frame
             in_range = None
+            veh_lat = veh_lon = None
             if gframe and gframe.lat is not None:
                 dist = get_distance_metres(gframe, center)
                 in_range = dist <= half * math.sqrt(2) * 1.3
+                veh_lat, veh_lon = gframe.lat, gframe.lon
 
             level = vehicle.battery.level if vehicle.battery else None
             battery_ok = (level is None) or (level > 20)
@@ -321,6 +341,8 @@ class FlightManager(object):
                 battery_ok=battery_ok,
                 wp_index=wp_index,
                 wp_distance=round(wp_dist) if wp_dist is not None else None,
+                veh_lat=veh_lat,
+                veh_lon=veh_lon,
             )
         except Exception:
             # テレメトリ取得失敗は致命的ではない。次の周回で回復を試みる。
