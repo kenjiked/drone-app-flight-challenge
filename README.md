@@ -48,6 +48,11 @@ examples/   SITL 接続サンプル
 docs/       ドキュメント（SITL 動作確認ログ含む）
 ```
 
+## ドキュメント
+
+- [docs/setup-progress.md](docs/setup-progress.md) — 環境構築・提出準備の進捗記録
+- [docs/sitl-test-log.md](docs/sitl-test-log.md) — SITL 動作確認ログ
+
 ## SITL 動作確認記録
 
 テスト結果は [docs/sitl-test-log.md](docs/sitl-test-log.md) に記録する。
