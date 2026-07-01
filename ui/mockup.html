@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>みまわり自作ドローン（Webアプリ・モック）</title>
+<style>
+  :root { --blue:#2563eb; --green:#16a34a; --amber:#d97706; --bg:#eef2f7; --ink:#0f172a; --line:#e2e8f0; }
+  * { box-sizing:border-box; font-family:system-ui,"Hiragino Sans","Noto Sans JP",sans-serif; }
+  body { margin:0; background:var(--bg); color:var(--ink); }
+  header { background:#0f172a; color:#fff; padding:12px 20px; display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:18px; margin:0; }
+  header .badge { background:#fde68a; color:#92400e; font-size:11px; padding:3px 8px; border-radius:6px; font-weight:700; }
+  header .conn { margin-left:auto; font-size:12px; color:#94a3b8; }
+  header .conn b { color:#4ade80; }
+  .view { display:none; } .view.active { display:block; }
+
+  /* ---- ダッシュボード ---- */
+  .dash { max-width:1000px; margin:22px auto; padding:0 16px; }
+  .dash .top { display:flex; align-items:baseline; gap:12px; margin-bottom:14px; }
+  .dash h2 { margin:0; font-size:20px; } .dash .top p { color:#64748b; font-size:13px; margin:0; }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+  .scen { background:#fff; border:1px solid var(--line); border-radius:14px; padding:16px; display:flex; flex-direction:column; }
+  .scen .type { align-self:flex-start; font-size:11px; font-weight:700; padding:3px 9px; border-radius:999px; background:#dbeafe; color:#1e40af; }
+  .scen h3 { margin:10px 0 2px; font-size:16px; } .scen .place { color:#64748b; font-size:13px; margin:0 0 10px; }
+  .scen .status { font-size:12px; margin-bottom:12px; }
+  .scen .ok { color:#16a34a; } .scen .none { color:#94a3b8; }
+  .scen button { margin-top:auto; padding:11px; border:none; border-radius:10px; background:var(--green); color:#fff; font-weight:700; cursor:pointer; }
+  .scen.new { align-items:center; justify-content:center; border:2px dashed #cbd5e1; background:#f8fafc; cursor:pointer; color:#475569; font-weight:700; min-height:150px; }
+  .scen.new .plus { font-size:32px; line-height:1; }
+  .legend { color:#94a3b8; font-size:12px; margin-top:14px; }
+
+  /* ---- プランナー（地図＋パネル） ---- */
+  .back { max-width:1000px; margin:16px auto 0; padding:0 16px; }
+  .back a { color:var(--blue); font-size:13px; cursor:pointer; text-decoration:none; }
+  .wrap { max-width:1000px; margin:10px auto; padding:0 16px; display:grid; grid-template-columns:1.4fr 1fr; gap:18px; align-items:start; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:16px; overflow:hidden; }
+  .maparea { position:relative; }
+  .maparea svg { display:block; width:100%; height:380px; }
+  .maptag { position:absolute; top:10px; left:12px; background:rgba(255,255,255,.9); padding:5px 10px; border-radius:8px; font-size:12px; font-weight:600; }
+  .panel { padding:20px; min-height:380px; display:flex; flex-direction:column; }
+  .panel h2 { font-size:17px; margin:0 0 4px; } .panel .sub { color:#64748b; font-size:13px; margin:0 0 14px; }
+  label { font-weight:600; font-size:13px; }
+  input[type=text] { width:100%; padding:12px; font-size:15px; border:1px solid #cbd5e1; border-radius:10px; margin-top:6px; }
+  input[type=range] { width:100%; margin-top:8px; }
+  .btn { display:block; width:100%; padding:14px; font-size:15px; font-weight:700; border:none; border-radius:12px; color:#fff; background:var(--blue); margin-top:14px; cursor:pointer; }
+  .btn.green { background:var(--green); } .btn.ghost { background:#e2e8f0; color:#334155; } .btn.big { padding:20px; font-size:18px; }
+  .seg { display:flex; gap:8px; margin-top:8px; }
+  .seg button { flex:1; padding:10px; border-radius:10px; border:1px solid #cbd5e1; background:#fff; font-weight:600; cursor:pointer; }
+  .seg button.on { background:#dbeafe; border-color:var(--blue); color:#1e40af; }
+  .seg button:disabled { color:#94a3b8; background:#f8fafc; cursor:not-allowed; }
+  .check { display:flex; align-items:center; gap:10px; padding:11px 13px; border-radius:11px; background:#f0fdf4; margin-top:9px; font-size:14px; }
+  .check .i { width:22px; height:22px; border-radius:50%; background:var(--green); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:13px; }
+  .prog { height:12px; background:#e2e8f0; border-radius:8px; overflow:hidden; margin:12px 0; } .prog>div { height:100%; width:75%; background:var(--blue); }
+  .chips { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+  .chip { background:#dcfce7; color:#166534; padding:6px 11px; border-radius:999px; font-size:12px; font-weight:600; } .chip.note { background:#fef9c3; color:#854d0e; }
+  .note { color:#94a3b8; font-size:12px; margin-top:10px; }
+  .steps { display:flex; gap:6px; margin-top:auto; padding-top:16px; } .dot { flex:1; height:5px; border-radius:3px; background:#e2e8f0; } .dot.on { background:var(--blue); }
+  .done { text-align:center; padding:24px 0; } .done .big { font-size:56px; }
+  .screen { display:none; flex:1; flex-direction:column; } .screen.active { display:flex; }
+  .archnote { max-width:1000px; margin:8px auto 24px; padding:10px 16px; color:#64748b; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>みまわり自作ドローン</h1><span class="badge">モック（張りぼて）</span>
+  <span class="conn">接続先：ArduPilot SITL … <b>● 接続中（デモ）</b></span>
+</header>
+
+<!-- ========== 管理画面（ダッシュボード）＝入口 ========== -->
+<div class="view active" id="view-dashboard">
+  <div class="dash">
+    <div class="top"><h2>みまわり一覧</h2><p>登録したみまわりを実行・管理できます</p></div>
+    <div class="grid">
+      <div class="scen">
+        <span class="type">外周巡回</span><h3>名古屋城 外周みまわり</h3>
+        <p class="place">名古屋市中区 / 一辺160m・高さ25m</p>
+        <p class="status ok">前回：✅ 正常完了</p>
+        <button onclick="openPlanner('名古屋城')">▶ 実行</button>
+      </div>
+      <div class="scen">
+        <span class="type">外周巡回</span><h3>みどり農園 みまわり</h3>
+        <p class="place">郊外の農地 / 毎朝の見回り</p>
+        <p class="status ok">前回：✅ 正常完了</p>
+        <button onclick="openPlanner('みどり農園')">▶ 実行</button>
+      </div>
+      <div class="scen">
+        <span class="type">敷地チェック</span><h3>△△工場 敷地チェック</h3>
+        <p class="place">工場外周 / 週次点検</p>
+        <p class="status none">未実行</p>
+        <button onclick="openPlanner('△△工場')">▶ 実行</button>
+      </div>
+      <div class="scen new" onclick="openPlanner('')">
+        <div class="plus">＋</div><div>新しいみまわりを作る</div>
+      </div>
+    </div>
+    <p class="legend">シナリオの種類（今後）：外周巡回 ／ 塗りつぶし調査（近日）／ 地点めぐり（近日）。用途ごとに増やせます。</p>
+  </div>
+</div>
+
+<!-- ========== プランナー（地図＋ウィザード） ========== -->
+<div class="view" id="view-planner">
+  <div class="back"><a onclick="openDashboard()">← みまわり一覧に戻る</a></div>
+  <div class="wrap">
+    <div class="card maparea">
+      <div class="maptag" id="maptag">地図</div>
+      <svg viewBox="0 0 600 380">
+        <rect width="600" height="380" fill="#e8f0e8"/>
+        <path d="M0 95 H600 M0 190 H600 M0 285 H600 M120 0 V380 M300 0 V380 M470 0 V380" stroke="#cddacd" stroke-width="2"/>
+        <rect id="route" x="230" y="120" width="140" height="140" fill="rgba(37,99,235,.08)" stroke="#2563eb" stroke-width="3" stroke-dasharray="8 5" visibility="hidden"/>
+        <circle id="pin" cx="300" cy="190" r="7" fill="#dc2626" visibility="hidden"/>
+        <text id="pinlabel" x="300" y="174" text-anchor="middle" font-size="13" fill="#0f172a" visibility="hidden"></text>
+      </svg>
+    </div>
+    <div class="card panel">
+      <!-- 1 住所 -->
+      <div class="screen active" id="s1">
+        <h2>① 見回る場所を探す</h2><p class="sub">住所や地名を入れるだけ。</p>
+        <label>どこを見回りますか？</label>
+        <input id="addr" type="text" value="名古屋城" placeholder="住所や地名">
+        <button class="btn" onclick="go(2)">この場所を探す</button>
+        <p class="note">例）「名古屋城」「〇〇農園」「△△工場」</p>
+        <div class="steps"><i class="dot on"></i><i class="dot"></i><i class="dot"></i><i class="dot"></i><i class="dot"></i><i class="dot"></i></div>
+      </div>
+      <!-- 2 ルート作成 -->
+      <div class="screen" id="s2">
+        <h2>② 巡回ルートを作る</h2><p class="sub">形とサイズを決めます。地図に反映されます。</p>
+        <label>ルートの形</label>
+        <div class="seg"><button class="on">四角</button><button disabled>多角形をなぞる（近日）</button></div>
+        <label style="display:block; margin-top:14px;">大きさ（一辺）：<b id="sizeval">160</b> m</label>
+        <input id="size" type="range" min="60" max="260" value="160" oninput="resize()">
+        <label style="display:block; margin-top:10px;">高さ：<b id="altval">25</b> m</label>
+        <input id="alt" type="range" min="10" max="60" value="25" oninput="document.getElementById('altval').textContent=this.value">
+        <button class="btn green" onclick="go(3)">このルートで確定</button>
+        <button class="btn ghost" onclick="go(1)">場所を変える</button>
+        <p class="note">今は四角のみ。将来は地図をなぞって畑の形そのままに。</p>
+        <div class="steps"><i class="dot on"></i><i class="dot on"></i><i class="dot"></i><i class="dot"></i><i class="dot"></i><i class="dot"></i></div>
+      </div>
+      <!-- 3 飛行前チェック -->
+      <div class="screen" id="s3">
+        <h2>③ 飛ばす前の安全チェック</h2><p class="sub">無理な計画は、飛ばす前に止めます。</p>
+        <div class="check"><span class="i">✓</span> 電池は足ります（往復に十分）</div>
+        <div class="check"><span class="i">✓</span> 範囲は広すぎません</div>
+        <div class="check"><span class="i">✓</span> 高さは安全な範囲です</div>
+        <button class="btn green" onclick="go(4)">安全確認OK・次へ</button>
+        <p class="note">※ 判定ロジックは未実装（張りぼて）。ここが安全機能の芯。</p>
+        <div class="steps"><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot"></i><i class="dot"></i><i class="dot"></i></div>
+      </div>
+      <!-- 4 実行 -->
+      <div class="screen" id="s4">
+        <h2>④ 実行</h2><p class="sub">ボタンひとつで、みまわり開始。</p>
+        <button class="btn big green" onclick="go(5)">▶ みまわりを開始</button>
+        <button class="btn ghost" onclick="go(2)">ルートを見直す</button>
+        <p class="note">裏でArduPilotにミッションを送り、AUTOで飛行します。</p>
+        <div class="steps"><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot"></i><i class="dot"></i></div>
+      </div>
+      <!-- 5 飛行中 -->
+      <div class="screen" id="s5">
+        <h2>⑤ みまわり中…</h2>
+        <div class="prog"><div></div></div>
+        <p style="font-size:15px; margin:4px 0;">巡回中 <b>3 / 4</b> 地点</p>
+        <div class="chips"><span class="chip">姿勢OK</span><span class="chip">範囲内</span><span class="chip note">※監視は張りぼて</span></div>
+        <button class="btn" onclick="go(6)">（デモ）完了へ</button>
+        <div class="steps"><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot"></i></div>
+      </div>
+      <!-- 6 完了 -->
+      <div class="screen" id="s6">
+        <div class="done"><div class="big">✅</div><h2>みまわり完了</h2><p class="sub">ドローンは無事に戻りました。</p></div>
+        <button class="btn green" onclick="openDashboard()">一覧に戻る</button>
+        <div class="steps"><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i></div>
+      </div>
+    </div>
+  </div>
+  <p class="archnote">構成（デモ）：ブラウザ（このUI）でルートを指定 → 裏側でArduPilot(SITL)にMAVLinkで接続してミッションを実行。※フライトコード側も最適化・拡張していく。</p>
+</div>
+
+<script>
+  let cur=1;
+  function openDashboard(){
+    document.getElementById('view-planner').classList.remove('active');
+    document.getElementById('view-dashboard').classList.add('active');
+    window.scrollTo(0,0);
+  }
+  function openPlanner(addr){
+    document.getElementById('view-dashboard').classList.remove('active');
+    document.getElementById('view-planner').classList.add('active');
+    if(addr) document.getElementById('addr').value=addr;
+    // 常に最初の画面(住所)から
+    document.getElementById('s'+cur).classList.remove('active'); cur=1;
+    document.getElementById('s1').classList.add('active');
+    // 地図リセット
+    document.getElementById('pin').setAttribute('visibility','hidden');
+    document.getElementById('pinlabel').setAttribute('visibility','hidden');
+    document.getElementById('route').setAttribute('visibility','hidden');
+    document.getElementById('maptag').textContent='地図';
+    window.scrollTo(0,0);
+  }
+  function showPin(){
+    const a=(document.getElementById('addr').value||'').trim();
+    document.getElementById('pin').setAttribute('visibility','visible');
+    const t=document.getElementById('pinlabel'); t.setAttribute('visibility','visible'); t.textContent=a||'指定地点';
+    document.getElementById('maptag').textContent=a||'地図';
+  }
+  function showRoute(){ document.getElementById('route').setAttribute('visibility','visible'); resize(); }
+  function resize(){
+    const m=+document.getElementById('size').value; document.getElementById('sizeval').textContent=m;
+    const px=m*1.1, r=document.getElementById('route');
+    r.setAttribute('x',300-px/2); r.setAttribute('y',190-px/2); r.setAttribute('width',px); r.setAttribute('height',px);
+  }
+  function go(n){
+    document.getElementById('s'+cur).classList.remove('active');
+    if(n>=2){ showPin(); showRoute(); }
+    cur=n; document.getElementById('s'+cur).classList.add('active'); window.scrollTo(0,0);
+  }
+</script>
+</body>
+</html>
