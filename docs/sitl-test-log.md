@@ -19,6 +19,20 @@ ArduPilot SITL で課題を検証した記録を残す。
 | 2026-07-02 | **UI↔ArduPilot連結**: ブラウザ→HTTP→dronekit→SITL (`src/server.py` + `flight_service.py` + `ui/app.html`) | server.py がAPI経由でSITL自動起動 | `tcp:127.0.0.1:5760` | **OK（完走・実テレメトリ確認）** | `/api/start`(名古屋城,一辺100m,高度20m)→launching→connecting→prearm→takeoff(0→20m)→AUTO巡回(wp 1→4)→RTL(20→1.5m)→done。モード遷移 STABILIZE→GUIDED→AUTO→RTL、電池 100→83%、姿勢/範囲/電池フラグを実データで取得。急旋回で姿勢フラグが一瞬 false=実測の証拠。SITLはdone後に0プロセスへ自動片付け |
 | 2026-07-02 | **③守る層 機体側安全機構の検証**: Step1 param + Step2 Lua (`safety/patrol_safety.parm` + `patrol_safety.lua`) | `sim_vehicle.py -v ArduCopter --no-mavproxy -w`、Lua を `ardupilot/scripts/` に配置、param投入後 reboot | `tcp:127.0.0.1:5760` | **OK（Lua ロード / L1 / L2 すべて確認）** | 下記「機体側安全機構の検証」参照 |
 
+## ルート安全性評価の実装＆多角形ルート（2026-07-02）
+
+計画側のルート安全性評価を「モック→本物」に昇格し、多角形ルートを追加した（design-decisions D8）。
+
+- **A/B/D 実チェック化**（`src/geo_safety.py` 新規・外部API不要・オフライン）:
+  - A 範囲↔フェンス整合＝実計算（角 vs FENCE_RADIUS×0.9=135m）。level=block で飛行可否を左右。
+  - B 空港近接＝主要空港座標＋haversine（5km圏内で warn）。D 飛行禁止ゾーン＝サンプルGeoJSON＋点in多角形（warn）。
+  - `precheck(side,alt,lat,lon,corners)` が各 check に level(block/warn) を付けて返す。
+  - 検証(単体): 名古屋城既定=全通過 / 一辺260m=fence NG(ok=false) / 皇居=nofly warn / 羽田近く=空港 warn / 位置なし=位置系省略。
+- **C 多角形ルート（地図をなぞる）**: UIで頂点をタップ→ポリゴン→`build_polygon_mission` でミッション化。
+  - **SITL 実飛行 OK**: ホーム周りの5頂点ポリゴンで `build_polygon_mission` が takeoff+5頂点+閉じ=7コマンドを生成、
+    AUTO で seq2→7 まで全ウェイポイントを通過し一周完了→RTL。多角形の巡回が実機(SITL)で成立。
+  - precheck も多角形の実形状（重心・最遠頂点・周長）で評価することを単体確認（大ポリゴン=fence/battery NG、皇居ポリゴン=nofly warn）。
+
 ## 発見・修正（背骨テスト 2026-07-01）
 
 - **バグ**: GPS/EKF準備前に現在地を読み、巡回中心が (0,0)＝ヌル島になっていた。

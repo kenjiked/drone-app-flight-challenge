@@ -98,6 +98,29 @@ def build_patrol_mission(vehicle, center, size_m, alt_m):
     return len(corners)
 
 
+def build_polygon_mission(vehicle, corners_latlng, alt_m):
+    """任意の多角形（頂点 [[lat,lon],...]）の外周を巡回するミッションを組んでアップロードする。
+    四角(build_patrol_mission)の一般化。地図をなぞって作ったルート(UI C)用。
+    返り値: 巡回ウェイポイント数（頂点数）。"""
+    cmds = vehicle.commands
+    cmds.download()
+    cmds.wait_ready()
+    cmds.clear()
+
+    frame = mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT
+    cmds.add(Command(0, 0, 0, frame, mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+                     0, 0, 0, 0, 0, 0, 0, 0, alt_m))
+    for lat, lon in corners_latlng:
+        cmds.add(Command(0, 0, 0, frame, mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
+                         0, 0, 0, 0, 0, 0, lat, lon, alt_m))
+    # 最初の頂点に戻って一周を閉じる
+    lat0, lon0 = corners_latlng[0]
+    cmds.add(Command(0, 0, 0, frame, mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
+                     0, 0, 0, 0, 0, 0, lat0, lon0, alt_m))
+    cmds.upload()
+    return len(corners_latlng)
+
+
 def arm_and_takeoff(vehicle, target_alt):
     """アーム前チェックを待ってからアーム→離陸(target_alt まで)。"""
     print("離陸前チェック中...")

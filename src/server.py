@@ -106,7 +106,8 @@ class Handler(BaseHTTPRequestHandler):
                 side = float(data.get("side", DEFAULT_SIDE_M))
                 alt = float(data.get("alt", DEFAULT_ALT_M))
                 self._send_json(manager.precheck(
-                    side, alt, lat=data.get("lat"), lon=data.get("lon")))
+                    side, alt, lat=data.get("lat"), lon=data.get("lon"),
+                    corners=data.get("corners")))
 
             elif self.path == "/api/start":
                 data = self._read_json()
@@ -117,6 +118,7 @@ class Handler(BaseHTTPRequestHandler):
                     side_m=float(data.get("side", DEFAULT_SIDE_M)),
                     alt_m=float(data.get("alt", DEFAULT_ALT_M)),
                     connect_str=FORCE_CONNECT,
+                    corners=data.get("corners"),
                 ))
 
             elif self.path == "/api/stop":

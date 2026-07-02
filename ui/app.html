@@ -148,14 +148,27 @@
       <div class="screen" id="s2">
         <h2>② 巡回ルートを作る</h2><p class="sub">形とサイズを決めます。地図に反映されます。</p>
         <label>ルートの形</label>
-        <div class="seg"><button class="on">四角</button><button disabled>多角形をなぞる（近日）</button></div>
-        <label style="display:block; margin-top:14px;">大きさ（一辺）：<b id="sizeval">160</b> m</label>
-        <input id="size" type="range" min="60" max="260" value="160" oninput="resize()">
+        <div class="seg">
+          <button id="modeSquare" class="on" onclick="setRouteMode('square')">四角</button>
+          <button id="modePoly" onclick="setRouteMode('poly')">多角形をなぞる</button>
+        </div>
+        <div id="sqCtl">
+          <label style="display:block; margin-top:14px;">大きさ（一辺）：<b id="sizeval">160</b> m</label>
+          <input id="size" type="range" min="60" max="260" value="160" oninput="resize()">
+        </div>
+        <div id="polyCtl" style="display:none;">
+          <p class="note" style="margin-top:14px; color:#475569;">地図をタップして畑の角を順に打つと、その形で巡回します（3点以上）。</p>
+          <div style="display:flex; gap:8px; align-items:center; margin:6px 0;">
+            <button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="undoPolyPoint()">↩ 頂点を戻す</button>
+            <button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="clearPoly()">全消し</button>
+            <span class="note" id="polyCount">0 点</span>
+          </div>
+        </div>
         <label style="display:block; margin-top:10px;">高さ：<b id="altval">25</b> m</label>
         <input id="alt" type="range" min="10" max="60" value="25" oninput="document.getElementById('altval').textContent=this.value">
         <button class="btn green" onclick="goPrecheck()">このルートで確定</button>
         <button class="btn ghost" onclick="go(1)">場所を変える</button>
-        <p class="note">今は四角のみ。将来は地図をなぞって畑の形そのままに。</p>
+        <p class="note">四角＝手軽 ／ 多角形＝畑の形そのまま（地図をなぞる）。②実行層はどちらも同じ。</p>
         <div class="steps"><i class="dot on"></i><i class="dot on"></i><i class="dot"></i><i class="dot"></i><i class="dot"></i><i class="dot"></i></div>
       </div>
       <!-- 3 飛行前チェック -->
@@ -214,6 +227,9 @@
 
   // ---- 地図(Leaflet) ----
   let map=null, centerMarker=null, routeLayer=null, droneMarker=null, trailLine=null;
+  let routeMode='square';       // 'square' | 'poly'（多角形をなぞる, UI C）
+  let polyCorners=[];           // 多角形の頂点 [[lat,lon],...]
+  let polyMarkers=[];           // 各頂点の地図マーカー
   let trailPts=[];
   const HAS_LEAFLET = (typeof L !== 'undefined');
   const DRONE_ICON = HAS_LEAFLET ? L.divIcon({className:'', html:'<div class="droneicon">🚁</div>', iconSize:[22,22], iconAnchor:[11,11]}) : null;
@@ -224,6 +240,48 @@
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom:19, attribution:'© OpenStreetMap contributors'
     }).addTo(map);
+    map.on('click', onMapClick);   // 多角形モードで角を打つ
+  }
+
+  // ---- 多角形ルート（地図をなぞる, UI C） ----
+  function setRouteMode(mode){
+    routeMode = mode;
+    document.getElementById('modeSquare').classList.toggle('on', mode==='square');
+    document.getElementById('modePoly').classList.toggle('on', mode==='poly');
+    document.getElementById('sqCtl').style.display = mode==='square' ? 'block' : 'none';
+    document.getElementById('polyCtl').style.display = mode==='poly' ? 'block' : 'none';
+    clearPoly();
+    if(routeLayer && map){ map.removeLayer(routeLayer); routeLayer=null; }
+    if(mode==='square'){ showRoute(); }
+    else { document.getElementById('maptag').textContent='地図をタップして角を打つ'; }
+  }
+  function onMapClick(e){
+    if(routeMode!=='poly' || !map) return;
+    polyCorners.push([e.latlng.lat, e.latlng.lng]);
+    polyMarkers.push(L.circleMarker(e.latlng,
+      {radius:5, color:'#2563eb', fillColor:'#2563eb', fillOpacity:1, weight:2}).addTo(map));
+    redrawPoly();
+  }
+  function redrawPoly(){
+    if(routeLayer && map){ map.removeLayer(routeLayer); routeLayer=null; }
+    const el=document.getElementById('polyCount');
+    if(el) el.textContent = polyCorners.length + ' 点';
+    if(polyCorners.length>=2){
+      const style={color:'#2563eb', weight:3, dashArray:'8 5', fillColor:'#2563eb', fillOpacity:.08};
+      routeLayer = (polyCorners.length>=3 ? L.polygon(polyCorners, style)
+                                          : L.polyline(polyCorners, style)).addTo(map);
+    }
+  }
+  function undoPolyPoint(){
+    polyCorners.pop();
+    const m=polyMarkers.pop(); if(m && map) map.removeLayer(m);
+    redrawPoly();
+  }
+  function clearPoly(){
+    polyCorners=[];
+    for(const m of polyMarkers){ if(m && map) map.removeLayer(m); }
+    polyMarkers=[];
+    const el=document.getElementById('polyCount'); if(el) el.textContent='0 点';
   }
 
   // 中心(緯度経度)から北へdN・東へdE[m]ずらした[lat,lon]（patrol_spineと同式）
@@ -273,12 +331,14 @@
     clearMapOverlays();
     // 表示直後は地図のサイズが0なので、可視化してからサイズ再計算
     ensureMap();
+    setRouteMode('square');   // ルート形状を既定(四角)に戻す
     setTimeout(()=>{ map.invalidateSize(); }, 80);
     window.scrollTo(0,0);
   }
 
   function clearMapOverlays(){
     trailPts=[];
+    clearPoly();
     for(const lyr of [centerMarker, routeLayer, droneMarker, trailLine]){
       if(lyr && map) map.removeLayer(lyr);
     }
@@ -319,10 +379,11 @@
     setTimeout(()=>{ map.invalidateSize(); }, 60);
   }
 
-  // ルートの四角を地図に描く（プランニング中はクライアント計算）
+  // ルートを地図に描く（プランニング中はクライアント計算）
   function showRoute(){
-    if(!geo) return;
     ensureMap();
+    if(routeMode==='poly'){ redrawPoly(); return; }   // 多角形は打った頂点を再描画
+    if(!geo) return;
     const side=+document.getElementById('size').value;
     drawRoute(squareCorners(geo.lat, geo.lon, side));
   }
@@ -338,6 +399,9 @@
 
   // ---- ③ 実チェック ----
   async function goPrecheck(){
+    if(routeMode==='poly' && polyCorners.length<3){
+      alert('多角形は角を3点以上、地図をタップして打ってください。'); return;
+    }
     go(3);
     const side=+document.getElementById('size').value, alt=+document.getElementById('alt').value;
     const box=document.getElementById('checks');
@@ -347,6 +411,7 @@
     try{
       const body={ side, alt };
       if(geo){ body.lat=geo.lat; body.lon=geo.lon; }   // 位置ベース評価(空港/禁止ゾーン)に必要
+      if(routeMode==='poly'){ body.corners=polyCorners; }   // 多角形はその実形状で評価
       const res=await api('/api/precheck', body);
       box.innerHTML='';
       const order = res.order || Object.keys(res.checks);
@@ -410,6 +475,7 @@
     const body={ side, alt };
     if(geo){ body.address=geo.address; body.lat=geo.lat; body.lon=geo.lon; }
     else{ body.address=(document.getElementById('addr').value||'').trim(); }
+    if(routeMode==='poly' && polyCorners.length>=3){ body.corners=polyCorners; }   // 多角形ルート
     try{
       await api('/api/start', body);
       trailPts=[];

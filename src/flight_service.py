@@ -31,6 +31,7 @@ import geo_safety
 from geocode import geocode
 from patrol_spine import (
     build_patrol_mission,
+    build_polygon_mission,
     distance_to_current_waypoint,
     get_distance_metres,
     get_location_metres,
@@ -44,6 +45,17 @@ CRUISE_SPEED_MPS = 5.0   # 見積り用の水平巡航速度(m/s)。
 CLIMB_SPEED_MPS = 2.5    # 見積り用の上昇速度(m/s)。
 ENDURANCE_S = 720.0      # 見積り用の電池による総飛行可能時間(s) ≒ 12分。
 NUM_CORNERS = 4          # 四角の角の数(巡回地点数)。
+
+
+def _clean_corners(corners):
+    """UI から来た多角形頂点を検証。[[lat,lon],...] 3点以上なら [[float,float],...]、他は None。"""
+    if not corners:
+        return None
+    try:
+        pts = [[float(p[0]), float(p[1])] for p in corners]
+    except (TypeError, ValueError, IndexError):
+        return None
+    return pts if len(pts) >= 3 else None
 
 
 class FlightManager(object):
@@ -112,7 +124,7 @@ class FlightManager(object):
         return {"address": address, "lat": lat, "lon": lon, "source": source}
 
     # -------------------------------------------------- ③離陸前 安全チェック
-    def precheck(self, side_m, alt_m, lat=None, lon=None):
+    def precheck(self, side_m, alt_m, lat=None, lon=None, corners=None):
         """離陸前の安全チェック(親切版)。実際の数値見積りを返す。
 
         - 電池: 巡回の総距離から推定飛行時間を出し、電池の総飛行可能時間と比べる。
@@ -122,23 +134,39 @@ class FlightManager(object):
         - 飛行禁止ゾーン(D): サンプル禁止ポリゴンに掛かるか（点in多角形）。※警告
         各チェックは {ok, label, detail, level} を返す。level='block' のみが飛行可否(ok)を左右し、
         'warn' は注意喚起のみ（デモの happy-path を壊さないため）。lat/lon が無ければ位置系は省く。
+        corners([[lat,lon],...] 3点以上) を渡すと、四角ではなくその多角形の実形状で評価する(UI C)。
         設計: docs/safety-design.md §8。
         """
         side_m = float(side_m)
         alt_m = float(alt_m)
-        half = side_m / 2.0
-
-        # 概算の飛行経路長: 中心→角(対角) + 四辺 + 閉じ + 帰還(対角)
-        diag = half * math.sqrt(2)
-        horizontal = diag + 4 * side_m + side_m + diag
-        est_time = horizontal / CRUISE_SPEED_MPS + alt_m / CLIMB_SPEED_MPS * 2
-
-        # 電池: 推定飛行時間 < 総飛行可能時間の60% なら安全(往復＋余裕)
-        batt_ok = est_time < ENDURANCE_S * 0.6
-
-        # 範囲↔フェンス整合(A): 角(=半辺*√2) が Lua しきい値(FENCE_RADIUS*0.9) 以内か
-        corner_m = geo_safety.corner_distance_m(side_m)
+        corners = _clean_corners(corners)
         fence_lim = geo_safety.fence_limit_m()
+
+        if corners:
+            # 多角形: 重心を中心、最遠頂点距離を範囲、周長＋往復を経路長とする
+            clat = sum(c[0] for c in corners) / len(corners)
+            clon = sum(c[1] for c in corners) / len(corners)
+            lat, lon = clat, clon
+            corner_m = max(geo_safety.haversine_m(clat, clon, c[0], c[1]) for c in corners)
+            perim = 0.0
+            for i in range(len(corners)):
+                a, b = corners[i], corners[(i + 1) % len(corners)]
+                perim += geo_safety.haversine_m(a[0], a[1], b[0], b[1])
+            horizontal = perim + 2 * corner_m
+            zone_points = [[clat, clon]] + corners
+        else:
+            # 四角: 中心→角(対角) + 四辺 + 閉じ + 帰還(対角)
+            half = side_m / 2.0
+            diag = half * math.sqrt(2)
+            horizontal = diag + 4 * side_m + side_m + diag
+            corner_m = geo_safety.corner_distance_m(side_m)
+            zone_points = None
+            if lat is not None and lon is not None:
+                zone_points = [[float(lat), float(lon)]] + \
+                    geo_safety.square_corners(float(lat), float(lon), side_m)
+
+        est_time = horizontal / CRUISE_SPEED_MPS + alt_m / CLIMB_SPEED_MPS * 2
+        batt_ok = est_time < ENDURANCE_S * 0.6   # 往復＋余裕(60%)
         fence_ok = corner_m <= fence_lim
 
         checks = {
@@ -183,8 +211,7 @@ class FlightManager(object):
                 }
                 order.append("airport")
 
-            points = [[lat, lon]] + geo_safety.square_corners(lat, lon, side_m)
-            hit = geo_safety.zones_hit(points)
+            hit = geo_safety.zones_hit(zone_points or [[lat, lon]])
             checks["nofly"] = {
                 "ok": len(hit) == 0, "level": "warn",
                 "label": "飛行禁止ゾーンに掛かりません",
@@ -200,15 +227,17 @@ class FlightManager(object):
 
     # -------------------------------------------------------- ④実行(開始)
     def start(self, address=None, lat=None, lon=None, side_m=DEFAULT_SIDE_M,
-              alt_m=DEFAULT_ALT_M, connect_str=None):
+              alt_m=DEFAULT_ALT_M, connect_str=None, corners=None):
         """巡回飛行を開始する。すぐ返り、実処理は別スレッドで進む。
 
         connect_str を渡すと、既に起動済みの SITL に接続する(プレゼンで --map を見せたい時)。
         省略時は、住所の座標をホームにして SITL を自動起動する(1コマンド体験)。
+        corners([[lat,lon],...] 3点以上) を渡すと、四角ではなくその多角形の外周を巡回する(UI C)。
         """
         if self.is_running():
             raise RuntimeError("すでに飛行中です")
 
+        corners = _clean_corners(corners)
         self._stop_flag = False
         self._state = self._initial_state()
         self._set(side_m=float(side_m), alt_m=float(alt_m), address=address,
@@ -217,7 +246,7 @@ class FlightManager(object):
 
         self._thread = threading.Thread(
             target=self._run,
-            args=(address, lat, lon, float(side_m), float(alt_m), connect_str),
+            args=(address, lat, lon, float(side_m), float(alt_m), connect_str, corners),
             daemon=True)
         self._thread.start()
         return self.snapshot()
@@ -234,7 +263,7 @@ class FlightManager(object):
         return self.snapshot()
 
     # ------------------------------------------------------ 実処理(別スレッド)
-    def _run(self, address, lat, lon, side_m, alt_m, connect_str):
+    def _run(self, address, lat, lon, side_m, alt_m, connect_str, corners=None):
         half = side_m / 2.0
         try:
             # 1) 住所→座標(UIが座標を渡していなければ変換)
@@ -244,6 +273,14 @@ class FlightManager(object):
                 self._set(lat=lat, lon=lon, geocode_source=source)
             else:
                 self._set(geocode_source="ui")
+
+            # 多角形ルート(UI C)なら重心をホーム/中心に、最遠頂点距離を範囲(half相当)にする
+            if corners:
+                clat = sum(c[0] for c in corners) / len(corners)
+                clon = sum(c[1] for c in corners) / len(corners)
+                lat, lon = clat, clon
+                half = max(geo_safety.haversine_m(clat, clon, c[0], c[1]) for c in corners)
+                self._set(lat=lat, lon=lon)
 
             # 2) SITL接続(既存に接続 or 自動起動)
             target = connect_str
@@ -261,7 +298,7 @@ class FlightManager(object):
             self._set(connected=True)
 
             center = LocationGlobal(lat, lon, alt_m)
-            self._fly(self._vehicle, center, half, alt_m)
+            self._fly(self._vehicle, center, half, alt_m, corners=corners)
 
             if not self._stop_flag:
                 self._set(phase="done", message="みまわり完了。無事に戻りました。",
@@ -278,8 +315,9 @@ class FlightManager(object):
         finally:
             self._cleanup()
 
-    def _fly(self, vehicle, center, half, alt_m):
-        """離陸→AUTO巡回→帰還。毎秒テレメトリを状態へ反映する。"""
+    def _fly(self, vehicle, center, half, alt_m, corners=None):
+        """離陸→AUTO巡回→帰還。毎秒テレメトリを状態へ反映する。
+        corners が渡されればその多角形の外周を、無ければ四角(half=半辺)を巡回する。"""
         # 準備(GPS/EKF)待ち
         self._set(phase="prearm", message="機体の準備(GPS/EKF)を待機中…")
         t0 = time.time()
@@ -291,19 +329,23 @@ class FlightManager(object):
                 raise RuntimeError("準備がtimeout。GPS/EKFが整いませんでした")
             time.sleep(1)
 
-        # ミッション生成(四角の外周) + アップロード
+        # ミッション生成 + アップロード（多角形 or 四角）
         self._set(message="巡回ルートをアップロード中…")
-        num_corners = build_patrol_mission(vehicle, center, half, alt_m)
-
-        # 地図描画用に、実際の巡回ルート(四角の角)の緯度経度を状態へ入れる
-        # ※ build_patrol_mission と同じ順序・同じ座標にする
-        corner_locs = [
-            get_location_metres(center,  half, -half),
-            get_location_metres(center,  half,  half),
-            get_location_metres(center, -half,  half),
-            get_location_metres(center, -half, -half),
-        ]
-        self._set(corners=[[c.lat, c.lon] for c in corner_locs])
+        if corners:
+            num_corners = build_polygon_mission(vehicle, corners, alt_m)
+            route = [[c[0], c[1]] for c in corners]
+        else:
+            num_corners = build_patrol_mission(vehicle, center, half, alt_m)
+            # ※ build_patrol_mission と同じ順序・同じ座標にする
+            corner_locs = [
+                get_location_metres(center,  half, -half),
+                get_location_metres(center,  half,  half),
+                get_location_metres(center, -half,  half),
+                get_location_metres(center, -half, -half),
+            ]
+            route = [[c.lat, c.lon] for c in corner_locs]
+        # 地図描画用に、実際の巡回ルートの緯度経度と地点数を状態へ入れる
+        self._set(corners=route, wp_total=num_corners)
 
         # アーム→離陸
         self._set(phase="takeoff", message="離陸中…")
@@ -371,8 +413,9 @@ class FlightManager(object):
             level = vehicle.battery.level if vehicle.battery else None
             battery_ok = (level is None) or (level > 20)
 
+            wp_total = self._state.get("wp_total", NUM_CORNERS)
             wp_next = vehicle.commands.next
-            wp_index = max(0, min(NUM_CORNERS, wp_next - 1))
+            wp_index = max(0, min(wp_total, wp_next - 1))
             wp_dist = distance_to_current_waypoint(vehicle)
 
             self._set(
