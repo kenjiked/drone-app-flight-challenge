@@ -56,10 +56,27 @@ ArduPilot SITL で課題を検証した記録を残す。
   **GUIDED→RTL を自動切替**。標準フェンス無効下で RTL したので、切替の主体が自作 Lua であることを確定。
 
 **発見（要フォロー / 修正候補）**:
-- Lua が送る**日本語 GCS メッセージが文字化け**する（この pymavlink 受信経路では非ASCIIバイトが U+FFFD に置換。
-  ASCII/数値は無事）。加えて MAVLink **STATUSTEXT は 50 バイト上限**で、日本語の理由文（UTF-8で長い）が途中切れする。
-  → 運用・可読性のため、安全系メッセージは**短い ASCII 主体**にするか 50 バイト以内へ収める改善を検討
-  （機能は正常。表示だけの問題だが、操作者が理由を読めないと安全機構の意味が薄れる）。
+- ~~Lua が送る**日本語 GCS メッセージが文字化け**する~~ **解決（2026-07-02、下記「文字化け修正」参照）**:
+  この pymavlink 受信経路では非ASCIIバイトが U+FFFD に置換され、加えて MAVLink **STATUSTEXT は 50 バイト上限**で
+  日本語の理由文が途中切れしていた。→ 機体→GCS の安全メッセージを**短い ASCII**（数値は保持）に統一して解消。
+
+## 文字化け修正（③守る層メッセージのASCII化 / 2026-07-02）
+
+`patrol_safety.lua` の `gcs:send_text` / `set_aux_auth_failed` の**送信文字列を短い ASCII に統一**した
+（ソースコードのコメントは日本語のまま）。理由: (1) STATUSTEXT 50バイト上限でUTF-8日本語が途中切れ、
+(2) 受信ツールによっては非ASCIIが文字化け。非エンジニア向けの日本語表示は Web UI 側の役割（設計の役割分担）。
+
+主な変更（例）:
+- 範囲逸脱: `巡回範囲の外に…` → `PatrolSafety: out of range %.0fm>%.0fm -> RTL`
+- 姿勢/電池: → `attitude %.0f/%.0f deg` / `battery low %d%%`
+- 離陸前拒否理由: `みまわり: 電池残量が少ない(…)` → `PS: batt %d%%<%d%%` / `no position (GPS/EKF)`
+
+**再検証（すべて OK・ASCIIで可読・50バイト以内）**:
+- Lua ロード: `PatrolSafety 0.1 loaded`
+- L1 離陸前ブロック: 残量0%で arm → `ACK=4 FAILED`／`armed=False`、理由 `Arm: PS: batt 0%<40%`（`isascii=True`）
+- L2 範囲逸脱→RTL: FENCE無効で隔離し北へ飛行 → `PatrolSafety: out of range 60m>54m -> RTL`（`isascii=True`, 41B）で GUIDED→RTL
+- 注: L1 の低残量は「先に飛行して消費を溜め→`BATT_CAPACITY` を小さく設定」で `capacity_remaining_pct` を 0% にして再現
+  （放電はモーター通電＝飛行中に進むため。容量を極小(=5)にすると残量が -1=無効になり Lua はスキップする点も確認）。
 
 **検証時の一時変更（本番設定ではない）**: L2 隔離のため `FENCE_ENABLE=0`、閾値到達を早めるため `FENCE_RADIUS=60`（parm 既定は 150/1）。
 巡回サイズに応じた本番値は `safety/patrol_safety.parm` のとおり。

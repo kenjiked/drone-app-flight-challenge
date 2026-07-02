@@ -41,13 +41,17 @@ local FENCE_RADIUS = Parameter("FENCE_RADIUS")  -- Copter は常に存在
 local intervened = false        -- 今回の飛行で既に自動介入したか(RTLを毎秒撃たない)
 
 -- ---- 危険時: RTL へ切替 ----
+-- 注: GCS へ送る文字列は短い ASCII に統一する。
+--   理由(1) MAVLink STATUSTEXT は 50 バイト上限 → 日本語(UTF-8マルチバイト)は途中切れする。
+--   理由(2) GCS/ツールによっては非ASCIIを表示できず文字化けする。
+-- 非エンジニア向けの日本語表示は Web UI 側の役割(設計の役割分担)。ここは機体側の技術メッセージ。
 local function trigger_rtl(reason)
   gcs:send_text(MAV_SEVERITY.WARNING,
-    string.format("%s: %s → RTLで帰還します", SCRIPT_NAME, reason))
+    string.format("%s: %s -> RTL", SCRIPT_NAME, reason))
   if vehicle:set_mode(MODE_RTL) then
     intervened = true
   else
-    gcs:send_text(MAV_SEVERITY.ERROR, SCRIPT_NAME .. ": RTL切替に失敗しました")
+    gcs:send_text(MAV_SEVERITY.ERROR, SCRIPT_NAME .. ": RTL switch FAILED")
   end
 end
 
@@ -60,20 +64,21 @@ local function pre_arm_report()
   local pct = battery:capacity_remaining_pct(0)
   if pct and pct < ARM_MIN_BATT_PCT then
     ok = false
-    reasons[#reasons+1] = string.format("電池残量が少ない(%d%% < %d%%)", pct, ARM_MIN_BATT_PCT)
+    reasons[#reasons+1] = string.format("batt %d%%<%d%%", pct, ARM_MIN_BATT_PCT)
   end
 
   -- 位置推定が確定しているか(ヌル島=中心(0,0)で飛ぶ事故を防ぐ)
   local loc = ahrs:get_location()
   if not loc then
     ok = false
-    reasons[#reasons+1] = "位置情報がまだ確定していません(GPS/EKF待ち)"
+    reasons[#reasons+1] = "no position (GPS/EKF)"
   end
 
   if ok then
     arming:set_aux_auth_passed(auth_id)
   else
-    arming:set_aux_auth_failed(auth_id, "みまわり: " .. table.concat(reasons, " / "))
+    -- "Arm: " は ArduPilot が前置。ASCII短文で 50 バイト制限内に収める(先頭 "PS:" が本スクリプト印)
+    arming:set_aux_auth_failed(auth_id, "PS: " .. table.concat(reasons, " / "))
   end
 end
 
@@ -89,14 +94,14 @@ local function in_flight_monitor()
   local roll  = math.abs(math.deg(ahrs:get_roll_rad()))
   local pitch = math.abs(math.deg(ahrs:get_pitch_rad()))
   if roll > ATT_LIMIT_DEG or pitch > ATT_LIMIT_DEG then
-    trigger_rtl(string.format("姿勢が乱れました(roll %.0f°, pitch %.0f°)", roll, pitch))
+    trigger_rtl(string.format("attitude %.0f/%.0f deg", roll, pitch))
     return
   end
 
   -- 電池(親切版: 標準の電圧FSより早めに帰す)
   local pct = battery:capacity_remaining_pct(0)
   if pct and pct < FLY_LOW_BATT_PCT then
-    trigger_rtl(string.format("電池が少なくなりました(%d%%)", pct))
+    trigger_rtl(string.format("battery low %d%%", pct))
     return
   end
 
@@ -108,7 +113,7 @@ local function in_flight_monitor()
     if home and loc then
       local d = home:get_distance(loc)   -- 水平距離(m)
       if d > fr * DIST_FRAC then
-        trigger_rtl(string.format("巡回範囲の外に出そうです(%.0fm > %.0fm)", d, fr * DIST_FRAC))
+        trigger_rtl(string.format("out of range %.0fm>%.0fm", d, fr * DIST_FRAC))
         return
       end
     end
@@ -128,7 +133,7 @@ end
 
 -- ---- 起動 ----
 if not auth_id then
-  gcs:send_text(MAV_SEVERITY.ERROR, SCRIPT_NAME .. ": get_aux_auth_id に失敗(ARMING_CHECKのAUX_AUTHを確認)")
+  gcs:send_text(MAV_SEVERITY.ERROR, SCRIPT_NAME .. ": no aux_auth id (ARMING_CHECK)")
   return
 end
 gcs:send_text(MAV_SEVERITY.INFO, string.format("%s %s loaded", SCRIPT_NAME, SCRIPT_VERSION))
