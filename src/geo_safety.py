@@ -43,6 +43,23 @@ AIRPORTS = [
 # 鉄道近接の警告しきい値[m]（真上〜近接は墜落時に重大。線路からの水平距離）
 RAIL_WARN_M = 60.0
 
+# 送電線近接の警告しきい値[m]（接触・電磁干渉）
+POWER_WARN_M = 60.0
+
+# 人が集まる施設（学校・病院など）近接の警告しきい値[m]（第三者上空を避ける）
+CROWD_WARN_M = 100.0
+
+# 目視で機体を確認しづらくなる距離の目安[m]（操縦位置=ホームから）
+VLOS_WARN_M = 200.0
+
+# 天候の警告しきい値（風[m/s]・突風[m/s]・降水[mm]）
+WIND_WARN_MS = 5.0
+GUST_WARN_MS = 10.0
+
+# amenity 種別の日本語名（名称タグが無い施設向け）
+AMENITY_JA = {"school": "学校", "kindergarten": "幼稚園・保育園",
+              "hospital": "病院", "college": "大学・専門学校", "university": "大学"}
+
 # --- 注意ゾーン（サンプル・デモ用）。[名称, 種別, [[lat,lon],...]] の多角形 ---
 # 種別: "重要施設"(皇居・国会等) / "文化財"(城・寺社等)。飛行が制限・要配慮な代表例。
 # ※データは "例示" 止まり。実運用は国土地理院DID・文化財GIS等の公式データに差し替える。
@@ -233,3 +250,100 @@ def railway_near_online(points, center_lat, center_lon, radius_m, timeout=8):
         if best is None or d < best[1]:
             best = (name, d)
     return best   # None なら半径内に鉄道なし
+
+
+def osm_hazards_near(points, center_lat, center_lon, radius_m, timeout=8):
+    """1回の Overpass 照会で 鉄道・送電線・人が集まる施設(学校/病院等) を取得し、
+    カテゴリごとの最短 (名称, 距離m) を dict で返す（無いカテゴリはキー無し）。
+    地下鉄・トンネルは上空リスクが低いので除外。取得失敗時は例外（呼び側でフォールバック）。"""
+    import json as _json
+    import urllib.request as _req
+    import urllib.parse as _parse
+
+    r = max(200, int(radius_m))
+    around = "(around:%d,%f,%f)" % (r, center_lat, center_lon)
+    amen = '"amenity"~"^(school|kindergarten|hospital|college|university)$"'
+    query = (
+        "[out:json][timeout:%d];("
+        'way["railway"~"^(rail|light_rail|tram|monorail|narrow_gauge)$"]%s;'
+        'way["power"~"^(line|minor_line)$"]%s;'
+        "node[%s]%s;way[%s]%s;"
+        ");out geom;" % (timeout, around, around, amen, around, amen, around)
+    )
+    data = _parse.urlencode({"data": query}).encode()
+    req = _req.Request("https://overpass-api.de/api/interpreter", data=data,
+                       headers={"User-Agent": "drone-app-flight-challenge/1.0"})
+    with _req.urlopen(req, timeout=timeout) as resp:
+        obj = _json.loads(resp.read().decode("utf-8"))
+
+    res = {}
+    for el in obj.get("elements", []):
+        tags = el.get("tags", {})
+        if "railway" in tags:
+            if tags.get("tunnel") in ("yes", "building_passage") or tags.get("location") == "underground":
+                continue
+            cat, name = "railway", (tags.get("name") or "鉄道")
+        elif "power" in tags:
+            cat, name = "power", (tags.get("name") or "送電線")
+        elif "amenity" in tags:
+            cat = "crowd"
+            name = tags.get("name") or AMENITY_JA.get(tags["amenity"], "施設")
+        else:
+            continue
+
+        if el.get("type") == "node":
+            d = min(haversine_m(p[0], p[1], el["lat"], el["lon"]) for p in points)
+        else:
+            geom = el.get("geometry") or []
+            if len(geom) < 2:
+                continue
+            d = _min_dist_to_line(points, [[g["lat"], g["lon"]] for g in geom])
+        if d is None:
+            continue
+        cur = res.get(cat)
+        if cur is None or d < cur[1]:
+            res[cat] = (name, d)
+    return res
+
+
+def daylight_status(lat, lon, duration_s):
+    """いま飛んで日中(日の出〜日の入)に収まるかの目安（誤差±15分程度）。
+    返り値: {ok, sunrise:'HH:MM', sunset:'HH:MM', why: None|'before'|'ends_after'}"""
+    import datetime as _dt
+
+    now = _dt.datetime.now().astimezone()
+    n = now.timetuple().tm_yday
+    decl = -23.44 * math.cos(math.radians(360.0 / 365.0 * (n + 10)))
+    cosw = -math.tan(math.radians(lat)) * math.tan(math.radians(decl))
+    cosw = max(-1.0, min(1.0, cosw))
+    w = math.degrees(math.acos(cosw))          # 半日弧[deg]
+    noon_utc_h = 12.0 - lon / 15.0             # 太陽南中(UTC時)
+    base = _dt.datetime(now.year, now.month, now.day, tzinfo=_dt.timezone.utc)
+    sr = (base + _dt.timedelta(hours=noon_utc_h - w / 15.0)).astimezone(now.tzinfo)
+    ss = (base + _dt.timedelta(hours=noon_utc_h + w / 15.0)).astimezone(now.tzinfo)
+    end = now + _dt.timedelta(seconds=float(duration_s) + 300)   # 帰還+片付けの余裕5分
+
+    why = None
+    if now < sr:
+        why = "before"
+    elif end > ss:
+        why = "ends_after"
+    return {"ok": why is None, "sunrise": sr.strftime("%H:%M"),
+            "sunset": ss.strftime("%H:%M"), "why": why}
+
+
+def weather_now(lat, lon, timeout=6):
+    """現在の天気（Open-Meteo・無料/キー不要）。{wind, gust, rain} [m/s, m/s, mm]。
+    取得失敗時は例外（呼び側で"確認できず"扱い）。"""
+    import json as _json
+    import urllib.request as _req
+
+    url = ("https://api.open-meteo.com/v1/forecast?latitude=%f&longitude=%f"
+           "&current=wind_speed_10m,wind_gusts_10m,precipitation&wind_speed_unit=ms"
+           % (lat, lon))
+    req = _req.Request(url, headers={"User-Agent": "drone-app-flight-challenge/1.0"})
+    with _req.urlopen(req, timeout=timeout) as resp:
+        cur = _json.loads(resp.read().decode("utf-8")).get("current", {})
+    return {"wind": float(cur.get("wind_speed_10m") or 0.0),
+            "gust": float(cur.get("wind_gusts_10m") or 0.0),
+            "rain": float(cur.get("precipitation") or 0.0)}

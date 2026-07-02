@@ -195,8 +195,8 @@ class FlightManager(object):
         checks = {
             "battery": {
                 "ok": batt_ok, "level": "block",
-                "label": "電池は足ります（往復に十分）",
-                "detail": "推定飛行 約%d分 / 電池 約%d分（%d%%使用）" % (
+                "label": "電池は足ります（帰りのぶんも含めて）",
+                "detail": "みまわり一周＋帰りで約%d分 ／ 電池のもち約%d分（使用%d%%・余裕を確保）" % (
                     round(est_time / 60), round(ENDURANCE_S / 60),
                     round(est_time / ENDURANCE_S * 100)),
             },
@@ -217,8 +217,20 @@ class FlightManager(object):
             },
         }
 
+        # 目視距離（操縦位置=離発着地点から機体が見える距離か）※フェンスより緩い"気づき"用
+        vlos_ok = corner_m <= geo_safety.VLOS_WARN_M
+        checks["vlos"] = {
+            "ok": vlos_ok, "level": "warn",
+            "label": "目視で機体を確認できる距離です",
+            "detail": ("いちばん遠くても %dm（目視の目安 %dm 以内）"
+                       % (round(corner_m), round(geo_safety.VLOS_WARN_M)))
+                if vlos_ok else
+                ("いちばん遠い地点が %dm → 機体を見失いやすい距離です。近くから操縦してください"
+                 % round(corner_m)),
+        }
+        order = ["battery", "altitude", "fence", "vlos"]
+
         # 位置ベースの評価（住所を確定していれば実施）
-        order = ["battery", "altitude", "fence"]
         if lat is not None and lon is not None:
             lat = float(lat); lon = float(lon)
             near = geo_safety.nearest_airport(lat, lon)
@@ -227,11 +239,10 @@ class FlightManager(object):
                 airport_ok = adist >= geo_safety.AIRPORT_WARN_M
                 checks["airport"] = {
                     "ok": airport_ok, "level": "warn",
-                    "label": "空港・空域から離れています",
-                    "detail": ("最寄り %s 約%.1fkm（%dkm圏外）" % (aname, adist / 1000.0,
-                                round(geo_safety.AIRPORT_WARN_M / 1000)))
+                    "label": "近くに空港はありません",
+                    "detail": ("最寄りの空港（%s）まで約%.1fkm" % (aname, adist / 1000.0))
                         if airport_ok else
-                        ("最寄り %s 約%.1fkm → 空港周辺は飛行に許可が要る場合があります"
+                        ("空港（%s）まで約%.1fkm → 空港の近くは飛行に許可が必要な場合があります"
                          % (aname, adist / 1000.0)),
                 }
                 order.append("airport")
@@ -240,46 +251,97 @@ class FlightManager(object):
             hit = geo_safety.zones_hit(pts)
             checks["nofly"] = {
                 "ok": len(hit) == 0, "level": "warn",
-                "label": "重要施設・文化財にかかりません",
-                "detail": "皇居・文化財などの注意ゾーン外です（デモ用データ）" if not hit
-                    else ("注意ゾーンに接触: %s（デモ用データ）" % "、".join(hit)),
+                "label": "重要施設・文化財の上空にかかりません",
+                "detail": "皇居・文化財などの上空にはかかりません（デモ用データ）" if not hit
+                    else ("「%s」の上空にかかります（デモ用データ）" % "、".join(hit)),
             }
             order.append("nofly")
 
-            # 鉄道の上・近接（電車の上を飛ばない）。実データ(OpenStreetMap)を優先し、
-            # 取得できない時だけ同梱サンプルにフォールバック（その旨を明示）。
+            # 鉄道・送電線・学校/病院（1回のOpenStreetMap照会でまとめて取得）。
+            # 取得できない時は鉄道のみ同梱サンプルへフォールバックし、未確認である旨を明示。
             search_r = max(300.0, corner_m + 200.0)
-            src = "OpenStreetMap"
-            no_rail_in_radius = False
             try:
-                rail = geo_safety.railway_near_online(pts, lat, lon, search_r)
-                if rail is None:
-                    no_rail_in_radius = True
+                hz = geo_safety.osm_hazards_near(pts, lat, lon, search_r)
             except Exception:
-                rail = geo_safety.railway_near(pts)   # オフライン等 → サンプル
-                src = "サンプル(未確認)"
+                hz = None
 
-            if no_rail_in_radius:
-                checks["railway"] = {
-                    "ok": True, "level": "warn",
-                    "label": "鉄道の上・近くを飛びません",
-                    "detail": "半径%dm内に鉄道はありません（%s）" % (round(search_r), src),
+            if hz is not None:
+                for key, warn_m, label, kind in (
+                        ("railway", geo_safety.RAIL_WARN_M, "電車の上・近くを飛びません", "線路"),
+                        ("power",   geo_safety.POWER_WARN_M, "送電線から離れています", "送電線"),
+                        ("crowd",   geo_safety.CROWD_WARN_M, "学校・病院などの上を飛びません", "施設")):
+                    item = hz.get(key)
+                    if item is None:
+                        checks[key] = {"ok": True, "level": "warn", "label": label,
+                                       "detail": "周囲%dmに%sはありません（OpenStreetMap）"
+                                                 % (round(search_r), kind)}
+                    else:
+                        name, d = item
+                        ok = d >= warn_m
+                        checks[key] = {"ok": ok, "level": "warn", "label": label,
+                                       "detail": ("いちばん近い%s「%s」まで約%dm"
+                                                  % (kind, name, round(d))) if ok else
+                                                 ("%s「%s」まで約%dm → 真上や近くは危険です。ルートを離してください"
+                                                  % (kind, name, round(d)))}
+                    order.append(key)
+            else:
+                rail = geo_safety.railway_near(pts)   # オフライン等 → サンプル
+                if rail:
+                    rname, rdist = rail
+                    rail_ok = rdist >= geo_safety.RAIL_WARN_M
+                    checks["railway"] = {
+                        "ok": rail_ok, "level": "warn",
+                        "label": "電車の上・近くを飛びません",
+                        "detail": "【サンプル・未確認】最寄りの線路「%s」まで約%dm" % (rname, round(rdist))
+                            if rail_ok else
+                            "【サンプル・未確認】線路「%s」まで約%dm → ルートを離してください" % (rname, round(rdist)),
+                    }
+                    order.append("railway")
+                checks["hazard_offline"] = {
+                    "ok": False, "level": "warn",
+                    "label": "送電線・学校/病院の確認",
+                    "detail": "オフラインのため確認できませんでした。インターネット接続時に自動で確認します",
                 }
-                order.append("railway")
-            elif rail:
-                rname, rdist = rail
-                rail_ok = rdist >= geo_safety.RAIL_WARN_M
-                note = "" if src == "OpenStreetMap" else "【%s】" % src
-                checks["railway"] = {
-                    "ok": rail_ok, "level": "warn",
-                    "label": "鉄道の上・近くを飛びません",
-                    "detail": ("%s最寄りの線路「%s」まで約%dm（%dm以上）"
-                               % (note, rname, round(rdist), round(geo_safety.RAIL_WARN_M)))
-                        if rail_ok else
-                        ("%s線路「%s」に近接 約%dm → 電車の上・近くは墜落時に危険。ルートを離してください"
-                         % (note, rname, round(rdist))),
+                order.append("hazard_offline")
+
+            # 時間帯（日中に帰って来られるか。日の出/日の入は目安±15分）
+            dl = geo_safety.daylight_status(lat, lon, est_time)
+            if dl["why"] == "before":
+                dl_detail = "まだ日の出前です（日の出 %s）→ 夜間の飛行は原則できません" % dl["sunrise"]
+            elif dl["why"] == "ends_after":
+                dl_detail = ("帰ってくる頃に日が沈みます（日の入 %s）→ 明るいうちに終えてください"
+                             % dl["sunset"])
+            else:
+                dl_detail = "日中の飛行です（日の入 %s まで余裕あり）" % dl["sunset"]
+            checks["daylight"] = {"ok": dl["ok"], "level": "warn",
+                                  "label": "明るい時間帯に飛びます", "detail": dl_detail}
+            order.append("daylight")
+
+            # 天気（風・雨）。取得できなければ"未確認"を明示
+            try:
+                w = geo_safety.weather_now(lat, lon)
+                reasons = []
+                if w["wind"] >= geo_safety.WIND_WARN_MS:
+                    reasons.append("風が強い（%.1fm/s）" % w["wind"])
+                if w["gust"] >= geo_safety.GUST_WARN_MS:
+                    reasons.append("突風のおそれ（%.1fm/s）" % w["gust"])
+                if w["rain"] > 0:
+                    reasons.append("雨（%.1fmm）" % w["rain"])
+                wx_ok = not reasons
+                checks["weather"] = {
+                    "ok": wx_ok, "level": "warn",
+                    "label": "天気は飛行に向いています",
+                    "detail": ("風 %.1fm/s・突風 %.1fm/s・雨なし" % (w["wind"], w["gust"]))
+                        if wx_ok else
+                        ("、".join(reasons) + " → 無理せず天気の回復を待ちましょう"),
                 }
-                order.append("railway")
+            except Exception:
+                checks["weather"] = {
+                    "ok": False, "level": "warn",
+                    "label": "天気の確認",
+                    "detail": "天気を確認できませんでした。風の強い日・雨の日は飛ばさないでください",
+                }
+            order.append("weather")
 
         # 飛行可否は block レベルのみで判定（warn は止めない）
         all_ok = all(c["ok"] for c in checks.values() if c.get("level") == "block")
@@ -386,7 +448,7 @@ class FlightManager(object):
                           finished_at=time.time())
         except Exception as e:
             self._set(phase="error",
-                      message="エラー: %s" % e,
+                      message="うまくいきませんでした: %s" % e,
                       error="%s\n%s" % (e, traceback.format_exc()),
                       finished_at=time.time())
         finally:
@@ -396,18 +458,18 @@ class FlightManager(object):
         """離陸→AUTO巡回→帰還。毎秒テレメトリを状態へ反映する。
         corners が渡されればその多角形の外周を、無ければ四角(half=半辺)を巡回する。"""
         # 準備(GPS/EKF)待ち
-        self._set(phase="prearm", message="機体の準備(GPS/EKF)を待機中…")
+        self._set(phase="prearm", message="機体の準備中…（GPS受信を待っています）")
         t0 = time.time()
         while not vehicle.is_armable:
             if self._stop_flag:
                 return
             self._push_telemetry(vehicle, center, half)
             if time.time() - t0 > 120:
-                raise RuntimeError("準備がtimeout。GPS/EKFが整いませんでした")
+                raise RuntimeError("機体の準備が整いませんでした（GPSを受信できる場所か確認してください）")
             time.sleep(1)
 
         # ミッション生成 + アップロード（多角形 or 四角）
-        self._set(message="巡回ルートをアップロード中…")
+        self._set(message="みまわりルートを機体に送信中…")
         if corners:
             num_corners = build_polygon_mission(vehicle, corners, alt_m)
             route = [[c[0], c[1]] for c in corners]
@@ -480,7 +542,7 @@ class FlightManager(object):
             time.sleep(1)
 
         # 帰還(RTL)
-        self._set(phase="rtl", message="帰還中(RTL)…")
+        self._set(phase="rtl", message="もどっています…（自動帰還）")
         self._add_event(6, "RTLモードへ切替: 離発着地点へ自動帰還")
         vehicle.mode = VehicleMode("RTL")
         t0 = time.time()

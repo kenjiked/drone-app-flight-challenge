@@ -155,7 +155,7 @@
       </div>
       <!-- 2 ルート作成 -->
       <div class="screen" id="s2">
-        <h2>② 巡回ルートを作る</h2><p class="sub">形とサイズを決めます。地図に反映されます。</p>
+        <h2>② みまわりルートを作る</h2><p class="sub">形とサイズを決めます。地図に反映されます。</p>
         <label>ルートの形</label>
         <div class="seg">
           <button id="modeSquare" class="on" onclick="setRouteMode('square')">四角</button>
@@ -166,7 +166,7 @@
           <input id="size" type="range" min="60" max="260" value="160" oninput="resize()">
         </div>
         <div id="polyCtl" style="display:none;">
-          <p class="note" style="margin-top:14px; color:#475569;">地図をタップして畑の角を順に打つと、その形で巡回します（3点以上）。</p>
+          <p class="note" style="margin-top:14px; color:#475569;">地図をタップして畑の角を順に打つと、その形でみまわりします（3点以上）。</p>
           <div style="display:flex; gap:8px; align-items:center; margin:6px 0;">
             <button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="undoPolyPoint()">↩ 頂点を戻す</button>
             <button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="clearPoly()">全消し</button>
@@ -190,7 +190,8 @@
         <div id="checks"><p class="note">チェック中…</p></div>
         <button class="btn green" id="btnFly" onclick="go(4)">安全確認OK・次へ</button>
         <button class="btn ghost" onclick="go(2)">ルートを見直す</button>
-        <p class="note">電池・範囲・高さを実際の数値で判定します（親切版の安全機構）。</p>
+        <p class="note">電池・高さ・距離のほか、空港・鉄道・送電線・学校や病院・時間帯・天気も実データで確認します。</p>
+        <p class="note">※ 実機では機体の登録とリモートID搭載（100g以上で義務）もご確認ください。</p>
         <div class="steps"><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot"></i><i class="dot"></i><i class="dot"></i></div>
       </div>
       <!-- 4 実行 -->
@@ -206,7 +207,7 @@
         <h2>⑤ みまわり中…</h2>
         <div class="phase" id="phaseMsg">準備中…</div>
         <div class="prog"><div id="progbar"></div></div>
-        <p style="font-size:15px; margin:4px 0;">巡回 <b id="wpText">0 / 4</b> 地点</p>
+        <p style="font-size:15px; margin:4px 0;">みまわり <b id="wpText">0 / 4</b> 地点</p>
         <div class="chips" id="chips">
           <span class="chip wait" id="chipAtt">姿勢 —</span>
           <span class="chip wait" id="chipRange">範囲 —</span>
@@ -228,7 +229,7 @@
           </div>
           <div class="aplog" id="apLog"><span class="t">ArduPilotからのメッセージがここに流れます…</span></div>
         </div>
-        <button class="btn ghost" onclick="stopFlight()">中止して帰還（RTL）</button>
+        <button class="btn ghost" onclick="stopFlight()">中止してすぐ戻す</button>
         <div class="steps"><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot"></i></div>
       </div>
       <!-- 6 完了 -->
@@ -560,8 +561,8 @@
 
   const PHASE_TEXT={
     geocoding:'住所を座標に変換中…', launching:'シミュレータを起動中…（約30秒）',
-    connecting:'ArduPilotに接続中…', prearm:'機体の準備(GPS/EKF)を待機中…',
-    takeoff:'離陸中…', patrol:'みまわり中…', rtl:'帰還中(RTL)…',
+    connecting:'ArduPilotに接続中…', prearm:'機体の準備中…（GPS受信を待っています）',
+    takeoff:'離陸中…', patrol:'みまわり中…', rtl:'もどっています…（自動帰還）',
     done:'完了', error:'エラー', idle:'待機中'
   };
 
