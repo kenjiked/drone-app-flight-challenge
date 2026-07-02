@@ -63,9 +63,13 @@
   .check .i { flex:none; width:22px; height:22px; border-radius:50%; background:var(--green); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:13px; }
   .check.ng .i { background:var(--red); }
   .check .txt b { display:block; } .check .txt small { color:#64748b; }
-  .check.planned { background:#f8fafc; opacity:.9; }
-  .check.planned .i { background:#cbd5e1; color:#fff; }
+  .check.warn { background:#fffbeb; }
+  .check.warn .i { background:#f59e0b; }
+  .check.evaluating { background:#f8fafc; opacity:.95; }
+  .check.evaluating .i { background:#cbd5e1; color:#fff; animation:pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{ opacity:1; } 50%{ opacity:.35; } }
   .check .tag { display:inline-block; margin-left:7px; font-size:10px; font-weight:700; color:#6d28d9; background:#ede9fe; padding:1px 6px; border-radius:6px; vertical-align:middle; }
+  .check .tag.mock { color:#b45309; background:#fef3c7; }
   .planned-head { margin-top:16px; font-size:12px; font-weight:700; color:#64748b; display:flex; align-items:center; gap:8px; }
   .planned-head::before, .planned-head::after { content:""; flex:1; height:1px; background:#e2e8f0; }
   .prog { height:12px; background:#e2e8f0; border-radius:8px; overflow:hidden; margin:12px 0; } .prog>div { height:100%; width:0%; background:var(--blue); transition:width .4s; }
@@ -353,32 +357,56 @@
       }
       btn.disabled=!res.ok;
       btn.textContent=res.ok?'安全確認OK・次へ':'⚠ 計画を見直してください';
-      renderPlannedChecks(box);   // 未実装アイデア(地図・法令ベースの評価)を「予定」として提示
+      mockEvaluate(box, side, alt);   // 地図・法令ベースの評価(未実装)をモックで"評価している風"に見せる
     }catch(e){
       box.innerHTML='<div class="err">チェック失敗：'+e.message+'</div>';
     }
   }
 
-  // 今後追加予定のルート安全性評価（地図・法令に基づく判定）。設計: docs/safety-design.md §8。
-  // まだ実装していないため判定はせず、将来像として非ブロッキングで表示する（デモで語る用）。
-  const PLANNED_CHECKS = [
-    { label:'人口集中地区（DID）の回避', detail:'地図データで飛行禁止／許可要否を自動判定（国土地理院DIDを想定）' },
-    { label:'建物・障害物の高さ',        detail:'ルート上の建物高さと巡回高度を突き合わせ、衝突リスクを事前警告' },
-    { label:'空港・制限空域の近接',      detail:'空港／ヘリポート／制限空域との距離を確認' },
-    { label:'地形の起伏（対地高度）',    detail:'標高データで地表からの高度を一定に保てるか確認' },
-    { label:'巡回範囲とジオフェンスの整合', detail:'計画した範囲が機体フェンス（FENCE_RADIUS）内かを実値で突き合わせ' },
-  ];
-  function renderPlannedChecks(box){
+  // 地図・法令ベースのルート安全性評価（設計: docs/safety-design.md §8）のモック。
+  // バックエンド未実装のため結果は擬似だが、"評価中→判定" のアニメで実装後の体験を先取りする。
+  // 一部は入力連動で"効いてる感"を出す（建物高さ=巡回高度に連動 / 範囲整合=実計算）。飛行判定には影響しない。
+  const FENCE_RADIUS_M = 150, FENCE_FRAC = 0.9;   // 機体側 safety/patrol_safety.parm と対応
+  function buildMockChecks(side, alt){
+    const cornerM = (side/2) * Math.SQRT2;              // 四角の角＝中心からの最遠距離
+    const fenceLimit = Math.round(FENCE_RADIUS_M * FENCE_FRAC);  // Luaの一歩手前しきい値(135m)
+    return [
+      { label:'人口集中地区（DID）の回避', ok:true,
+        detail:'対象地点は DID（人口集中地区）の外です' },
+      { label:'建物・障害物の高さ', ok: alt >= 30,       // 高度に連動して判定が変わる
+        detail: alt >= 30 ? ('巡回高度 '+alt+'m は周辺建物より高い想定です')
+                          : ('周辺に約30mの建物想定。高度 '+alt+'m はやや低い→上げると安全') },
+      { label:'空港・制限空域の近接', ok:true,
+        detail:'最寄りの空港・制限空域から十分に離れています' },
+      { label:'地形の起伏（対地高度）', ok:true,
+        detail:'地表の起伏はゆるやか。対地高度を保てる想定です' },
+      { label:'巡回範囲とジオフェンスの整合', ok: cornerM <= fenceLimit,  // ← ここは実計算
+        detail: cornerM <= fenceLimit
+          ? ('範囲はフェンス内（角 '+Math.round(cornerM)+'m ≦ '+fenceLimit+'m）')
+          : ('範囲がフェンス手前を超過（角 '+Math.round(cornerM)+'m ＞ '+fenceLimit+'m）。狭めると安全') },
+    ];
+  }
+  function mockEvaluate(box, side, alt){
     const head=document.createElement('div');
-    head.className='planned-head'; head.textContent='今後追加予定の安全チェック（開発中）';
+    head.className='planned-head'; head.textContent='追加の安全評価（モック・デモ用／実データではありません）';
     box.appendChild(head);
-    for(const c of PLANNED_CHECKS){
+    const checks=buildMockChecks(side, alt);
+    const rows=checks.map(c=>{
       const div=document.createElement('div');
-      div.className='check planned';
-      div.innerHTML='<span class="i">…</span>'+
-        '<span class="txt"><b>'+c.label+'<span class="tag">予定</span></b><small>'+c.detail+'</small></span>';
+      div.className='check evaluating';
+      div.innerHTML='<span class="i">◍</span>'+
+        '<span class="txt"><b>'+c.label+'<span class="tag mock">モック</span></b><small>評価中…</small></span>';
       box.appendChild(div);
-    }
+      return div;
+    });
+    // 一つずつ"評価完了"していくように見せる（staggered）
+    checks.forEach((c,i)=>{
+      setTimeout(()=>{
+        rows[i].className='check '+(c.ok?'':'warn');
+        rows[i].querySelector('.i').textContent = c.ok?'✓':'!';
+        rows[i].querySelector('.txt small').textContent = c.detail;
+      }, 500 + i*450);
+    });
   }
 
   // ---- ④ 開始 ----
