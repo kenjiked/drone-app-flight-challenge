@@ -63,6 +63,11 @@
   .check .i { flex:none; width:22px; height:22px; border-radius:50%; background:var(--green); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:13px; }
   .check.ng .i { background:var(--red); }
   .check .txt b { display:block; } .check .txt small { color:#64748b; }
+  .check.planned { background:#f8fafc; opacity:.9; }
+  .check.planned .i { background:#cbd5e1; color:#fff; }
+  .check .tag { display:inline-block; margin-left:7px; font-size:10px; font-weight:700; color:#6d28d9; background:#ede9fe; padding:1px 6px; border-radius:6px; vertical-align:middle; }
+  .planned-head { margin-top:16px; font-size:12px; font-weight:700; color:#64748b; display:flex; align-items:center; gap:8px; }
+  .planned-head::before, .planned-head::after { content:""; flex:1; height:1px; background:#e2e8f0; }
   .prog { height:12px; background:#e2e8f0; border-radius:8px; overflow:hidden; margin:12px 0; } .prog>div { height:100%; width:0%; background:var(--blue); transition:width .4s; }
   .chips { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
   .chip { background:#dcfce7; color:#166534; padding:6px 11px; border-radius:999px; font-size:12px; font-weight:600; }
@@ -348,8 +353,31 @@
       }
       btn.disabled=!res.ok;
       btn.textContent=res.ok?'安全確認OK・次へ':'⚠ 計画を見直してください';
+      renderPlannedChecks(box);   // 未実装アイデア(地図・法令ベースの評価)を「予定」として提示
     }catch(e){
       box.innerHTML='<div class="err">チェック失敗：'+e.message+'</div>';
+    }
+  }
+
+  // 今後追加予定のルート安全性評価（地図・法令に基づく判定）。設計: docs/safety-design.md §8。
+  // まだ実装していないため判定はせず、将来像として非ブロッキングで表示する（デモで語る用）。
+  const PLANNED_CHECKS = [
+    { label:'人口集中地区（DID）の回避', detail:'地図データで飛行禁止／許可要否を自動判定（国土地理院DIDを想定）' },
+    { label:'建物・障害物の高さ',        detail:'ルート上の建物高さと巡回高度を突き合わせ、衝突リスクを事前警告' },
+    { label:'空港・制限空域の近接',      detail:'空港／ヘリポート／制限空域との距離を確認' },
+    { label:'地形の起伏（対地高度）',    detail:'標高データで地表からの高度を一定に保てるか確認' },
+    { label:'巡回範囲とジオフェンスの整合', detail:'計画した範囲が機体フェンス（FENCE_RADIUS）内かを実値で突き合わせ' },
+  ];
+  function renderPlannedChecks(box){
+    const head=document.createElement('div');
+    head.className='planned-head'; head.textContent='今後追加予定の安全チェック（開発中）';
+    box.appendChild(head);
+    for(const c of PLANNED_CHECKS){
+      const div=document.createElement('div');
+      div.className='check planned';
+      div.innerHTML='<span class="i">…</span>'+
+        '<span class="txt"><b>'+c.label+'<span class="tag">予定</span></b><small>'+c.detail+'</small></span>';
+      box.appendChild(div);
     }
   }
 
