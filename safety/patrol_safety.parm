@@ -1,0 +1,30 @@
+# みまわり安全設定 (Step1: 設定のみ・コード0行) — docs/safety-design.md §5
+# ArduPilot 標準のフェイルセーフ/ジオフェンスで「異常→フライトモード自動切替」を成立させる。
+# SITL/実機に流し込む(dronekit の vehicle.parameters か MAVProxy `param load` 等)。
+# ※ FENCE_RADIUS/ALT_MAX と電池電圧は、巡回サイズ・機体に合わせて上書きすること。
+
+# --- ジオフェンス: 範囲逸脱 → RTL(100m超は強制LAND) ---
+FENCE_ENABLE    1
+FENCE_TYPE      3      # 円(2) + 最大高度(1)
+FENCE_RADIUS    150    # ホーム中心の許容半径[m](巡回半径+余裕)。要調整
+FENCE_ALT_MAX   40     # 最大高度[m](巡回高度+余裕)。要調整
+FENCE_ACTION    1      # 1=RTL or Land
+FENCE_MARGIN    5
+
+# --- バッテリ: 低下→RTL / 危険→LAND ---
+BATT_LOW_VOLT   10.5   # 3S目安。機体に合わせる
+BATT_LOW_TIMER  10
+BATT_FS_LOW_ACT 2      # 2=RTL
+BATT_CRT_VOLT   10.0
+BATT_FS_CRT_ACT 1      # 1=LAND
+
+# --- 通信(GCS)途絶 → RTL ---
+FS_GCS_ENABLE   1
+FS_GCS_TIMEOUT  5
+
+# --- 位置推定(EKF/GPS)異常 → LAND(位置不要で確実に降下) ---
+FS_EKF_ACTION   1      # 1=Land
+FS_EKF_THRESH   0.8
+
+# --- Lua スクリプト(Step2 patrol_safety.lua)を有効化 ---
+SCR_ENABLE      1
