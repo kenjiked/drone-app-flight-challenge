@@ -236,19 +236,22 @@ class FlightManager(object):
         checks = {
             "battery": {
                 "ok": batt_ok, "level": "block",
-                "label": "電池は足ります（帰りのぶんも含めて）",
+                "label": "電池は足ります（帰りのぶんも含めて）" if batt_ok
+                         else "電池が足りません（帰りのぶんが不足）",
                 "detail": "みまわり一周＋帰りで約%d分 ／ 電池のもち約%d分（使用%d%%・余裕を確保）" % (
                     round(est_time / 60), round(ENDURANCE_S / 60),
                     round(est_time / ENDURANCE_S * 100)),
             },
             "altitude": {
                 "ok": 10.0 <= alt_m <= 60.0, "level": "block",
-                "label": "高さは安全な範囲です",
+                "label": "高さは安全な範囲です" if 10.0 <= alt_m <= 60.0
+                         else "高さが安全な範囲を外れています",
                 "detail": "高度 %dm（安全範囲 10〜60m）" % round(alt_m),
             },
             "fence": {
                 "ok": fence_ok, "level": "block",
-                "label": "みまわり範囲は無理なく戻れる広さです",
+                "label": "みまわり範囲は無理なく戻れる広さです" if fence_ok
+                         else "みまわり範囲は無理なく戻れる広さではありません",
                 "detail": ("いちばん遠い地点まで %dm（安全に戻れる目安 %dm 以内）"
                            % (round(corner_m), round(fence_lim)))
                     if fence_ok else
@@ -262,7 +265,8 @@ class FlightManager(object):
         vlos_ok = corner_m <= geo_safety.VLOS_WARN_M
         checks["vlos"] = {
             "ok": vlos_ok, "level": "warn",
-            "label": "目視で機体を確認できる距離です",
+            "label": "目視で機体を確認できる距離です" if vlos_ok
+                     else "目視で機体を確認しづらい距離です",
             "detail": ("いちばん遠くても %dm（目視の目安 %dm 以内）"
                        % (round(corner_m), round(geo_safety.VLOS_WARN_M)))
                 if vlos_ok else
@@ -280,7 +284,7 @@ class FlightManager(object):
                 airport_ok = adist >= geo_safety.AIRPORT_WARN_M
                 checks["airport"] = {
                     "ok": airport_ok, "level": "warn",
-                    "label": "近くに空港はありません",
+                    "label": "近くに空港はありません" if airport_ok else "近くに空港があります",
                     "detail": ("最寄りの空港（%s）まで約%.1fkm" % (aname, adist / 1000.0))
                         if airport_ok else
                         ("空港（%s）まで約%.1fkm → 空港の近くは飛行に許可が必要な場合があります"
@@ -288,39 +292,51 @@ class FlightManager(object):
                 }
                 order.append("airport")
 
-            pts = zone_points or [[lat, lon]]
-            hit = geo_safety.zones_hit(pts)
-            checks["nofly"] = {
-                "ok": len(hit) == 0, "level": "warn",
-                "label": "重要施設・文化財の上空にかかりません",
-                "detail": "皇居・文化財などの上空にはかかりません（デモ用データ）" if not hit
-                    else ("「%s」の上空にかかります → 飛ばすには国の許可申請（DIPS）が必要な場合があります（デモ用データ）"
-                          % "、".join(hit)),
-            }
-            order.append("nofly")
-
-            # 鉄道・送電線・学校/病院（1回のOpenStreetMap照会でまとめて取得）。
+            # 鉄道・送電線・学校/病院・文化財/重要施設（1回のOpenStreetMap照会でまとめて取得）。
             # 取得できない時は鉄道のみ同梱サンプルへフォールバックし、未確認である旨を明示。
+            pts = zone_points or [[lat, lon]]
             search_r = max(300.0, corner_m + 200.0)
             try:
                 hz = geo_safety.osm_hazards_near(pts, lat, lon, search_r)
             except Exception:
                 hz = None
 
+            # 重要施設・文化財: 同梱サンプル(皇居等) + OSM実データ(城・御所・史跡・軍事施設)を統合
+            hit = geo_safety.zones_hit(pts)
             if hz is not None:
-                for key, warn_m, label, kind in (
-                        ("railway", geo_safety.RAIL_WARN_M, "電車の上・近くを飛びません", "線路"),
-                        ("power",   geo_safety.POWER_WARN_M, "送電線から離れています", "送電線"),
-                        ("crowd",   geo_safety.CROWD_WARN_M, "学校・病院などの上を飛びません", "施設")):
+                cul = hz.get("culture")
+                if cul and cul[1] < geo_safety.CULTURE_WARN_M and cul[0] not in hit:
+                    hit.append(cul[0])
+            nofly_ok = len(hit) == 0
+            checks["nofly"] = {
+                "ok": nofly_ok, "level": "warn",
+                "label": "重要施設・文化財の上空にかかりません" if nofly_ok
+                         else "重要施設・文化財の上空にかかります",
+                "detail": "皇居・城・史跡などの上空にはかかりません（OpenStreetMap＋デモ用データ）"
+                    if nofly_ok else
+                    ("「%s」の上空・すぐ近くです → 飛ばすには許可・配慮が必要です（DIPS申請等）"
+                     % "、".join(hit)),
+            }
+            order.append("nofly")
+
+            if hz is not None:
+                for key, warn_m, ok_label, ng_label, kind in (
+                        ("railway", geo_safety.RAIL_WARN_M,
+                         "電車の上・近くを飛びません", "電車の上・近くを飛んでしまいます", "線路"),
+                        ("power",   geo_safety.POWER_WARN_M,
+                         "送電線から離れています", "送電線に近すぎます", "送電線"),
+                        ("crowd",   geo_safety.CROWD_WARN_M,
+                         "学校・病院などの上を飛びません", "学校・病院などのすぐ近くを飛んでしまいます", "施設")):
                     item = hz.get(key)
                     if item is None:
-                        checks[key] = {"ok": True, "level": "warn", "label": label,
+                        checks[key] = {"ok": True, "level": "warn", "label": ok_label,
                                        "detail": "周囲%dmに%sはありません（OpenStreetMap）"
                                                  % (round(search_r), kind)}
                     else:
                         name, d = item
                         ok = d >= warn_m
-                        checks[key] = {"ok": ok, "level": "warn", "label": label,
+                        checks[key] = {"ok": ok, "level": "warn",
+                                       "label": ok_label if ok else ng_label,
                                        "detail": ("いちばん近い%s「%s」まで約%dm"
                                                   % (kind, name, round(d))) if ok else
                                                  ("%s「%s」まで約%dm → 真上や近くは危険です。ルートを離してください"
@@ -333,7 +349,8 @@ class FlightManager(object):
                     rail_ok = rdist >= geo_safety.RAIL_WARN_M
                     checks["railway"] = {
                         "ok": rail_ok, "level": "warn",
-                        "label": "電車の上・近くを飛びません",
+                        "label": "電車の上・近くを飛びません" if rail_ok
+                                 else "電車の上・近くを飛んでしまいます",
                         "detail": "【サンプル・未確認】最寄りの線路「%s」まで約%dm" % (rname, round(rdist))
                             if rail_ok else
                             "【サンプル・未確認】線路「%s」まで約%dm → ルートを離してください" % (rname, round(rdist)),
@@ -341,7 +358,7 @@ class FlightManager(object):
                     order.append("railway")
                 checks["hazard_offline"] = {
                     "ok": False, "level": "warn",
-                    "label": "送電線・学校/病院の確認",
+                    "label": "送電線・学校/病院・文化財を確認できませんでした",
                     "detail": "オフラインのため確認できませんでした。インターネット接続時に自動で確認します",
                 }
                 order.append("hazard_offline")
@@ -356,7 +373,9 @@ class FlightManager(object):
             else:
                 dl_detail = "日中の飛行です（日の入 %s まで余裕あり）" % dl["sunset"]
             checks["daylight"] = {"ok": dl["ok"], "level": "warn",
-                                  "label": "明るい時間帯に飛びます", "detail": dl_detail}
+                                  "label": "明るい時間帯に飛びます" if dl["ok"]
+                                           else "暗い時間帯にかかってしまいます",
+                                  "detail": dl_detail}
             order.append("daylight")
 
             # 天気（風・雨）。取得できなければ"未確認"を明示
@@ -372,7 +391,8 @@ class FlightManager(object):
                 wx_ok = not reasons
                 checks["weather"] = {
                     "ok": wx_ok, "level": "warn",
-                    "label": "天気は飛行に向いています",
+                    "label": "天気は飛行に向いています" if wx_ok
+                             else "天気が飛行に向いていません",
                     "detail": ("風 %.1fm/s・突風 %.1fm/s・雨なし" % (w["wind"], w["gust"]))
                         if wx_ok else
                         ("、".join(reasons) + " → 無理せず天気の回復を待ちましょう"),
@@ -380,7 +400,7 @@ class FlightManager(object):
             except Exception:
                 checks["weather"] = {
                     "ok": False, "level": "warn",
-                    "label": "天気の確認",
+                    "label": "天気を確認できませんでした",
                     "detail": "天気を確認できませんでした。風の強い日・雨の日は飛ばさないでください",
                 }
             order.append("weather")

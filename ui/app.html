@@ -296,6 +296,7 @@
   }
   function onMapClick(e){
     if(!map) return;
+    if(cur!==2) return;   // ルート編集は②画面のみ（飛行中などに頂点や離発着地点を触れない）
     if(placingHome){ setHome(e.latlng.lat, e.latlng.lng); return; }
     if(routeMode!=='poly') return;
     polyCorners.push([e.latlng.lat, e.latlng.lng]);
@@ -505,11 +506,12 @@
   // フェンス整合・空港近接・DIDゾーンは実チェック化したので上の実チェックへ移動済み。
   // "評価中→判定" のアニメで実装後の体験を先取りする。建物高さは巡回高度に連動。飛行判定には影響しない。
   function buildMockChecks(side, alt){
+    const bOk = alt >= 30;   // 高度に連動して判定が変わる
     return [
-      { label:'建物・障害物の高さ', ok: alt >= 30,       // 高度に連動して判定が変わる
-        detail: alt >= 30 ? ('巡回高度 '+alt+'m は周辺建物より高い想定です')
-                          : ('周辺に約30mの建物想定。高度 '+alt+'m はやや低い→上げると安全') },
-      { label:'地形の起伏（対地高度）', ok:true,
+      { label: bOk ? '建物より高く飛びます' : '建物より低く飛んでしまうかも', ok: bOk,
+        detail: bOk ? ('みまわり高度 '+alt+'m は周辺建物より高い想定です')
+                    : ('周辺に約30mの建物想定。高度 '+alt+'m はやや低い→上げると安全') },
+      { label:'地形の起伏は問題ありません', ok:true,
         detail:'地表の起伏はゆるやか。対地高度を保てる想定です' },
     ];
   }

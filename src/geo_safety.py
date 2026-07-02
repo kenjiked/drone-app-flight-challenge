@@ -52,6 +52,9 @@ CROWD_WARN_M = 100.0
 # 目視で機体を確認しづらくなる距離の目安[m]（操縦位置=ホームから）
 VLOS_WARN_M = 200.0
 
+# 文化財・重要施設（城・御所・軍事施設等）近接の警告しきい値[m]（敷地内=0mも検出）
+CULTURE_WARN_M = 50.0
+
 # 天候の警告しきい値（風[m/s]・突風[m/s]・降水[mm]）
 WIND_WARN_MS = 5.0
 GUST_WARN_MS = 10.0
@@ -263,12 +266,18 @@ def osm_hazards_near(points, center_lat, center_lon, radius_m, timeout=8):
     r = max(200, int(radius_m))
     around = "(around:%d,%f,%f)" % (r, center_lat, center_lon)
     amen = '"amenity"~"^(school|kindergarten|hospital|college|university)$"'
+    # 文化財・重要施設: 城/御所/砦/城壁/史跡 + heritage登録 + 軍事施設（memorial=小さな石碑は除外）
+    hist = '"historic"~"^(castle|palace|fort|citywalls|city_gate|archaeological_site)$"'
     query = (
         "[out:json][timeout:%d];("
         'way["railway"~"^(rail|light_rail|tram|monorail|narrow_gauge)$"]%s;'
         'way["power"~"^(line|minor_line)$"]%s;'
         "node[%s]%s;way[%s]%s;"
-        ");out geom;" % (timeout, around, around, amen, around, amen, around)
+        "nwr[%s]%s;"
+        'nwr["heritage"]%s;'
+        'nwr["military"]%s;way["landuse"="military"]%s;'
+        ");out geom;" % (timeout, around, around, amen, around, amen, around,
+                         hist, around, around, around, around)
     )
     data = _parse.urlencode({"data": query}).encode()
     req = _req.Request("https://overpass-api.de/api/interpreter", data=data,
@@ -288,22 +297,52 @@ def osm_hazards_near(points, center_lat, center_lon, radius_m, timeout=8):
         elif "amenity" in tags:
             cat = "crowd"
             name = tags.get("name") or AMENITY_JA.get(tags["amenity"], "施設")
+        elif "military" in tags or tags.get("landuse") == "military":
+            cat, name = "culture", "重要施設:" + (tags.get("name") or "軍事施設")
+        elif "historic" in tags or "heritage" in tags:
+            cat, name = "culture", "文化財:" + (tags.get("name") or "史跡・文化財")
         else:
             continue
 
-        if el.get("type") == "node":
-            d = min(haversine_m(p[0], p[1], el["lat"], el["lon"]) for p in points)
-        else:
-            geom = el.get("geometry") or []
-            if len(geom) < 2:
-                continue
-            d = _min_dist_to_line(points, [[g["lat"], g["lon"]] for g in geom])
+        d = _element_distance_m(points, el)
         if d is None:
             continue
         cur = res.get(cat)
         if cur is None or d < cur[1]:
             res[cat] = (name, d)
     return res
+
+
+def _line_distance_m(points, line):
+    """折れ線までの最短距離[m]。閉じた輪郭(敷地など)で点が内側なら 0（真上にいる扱い）。"""
+    d = _min_dist_to_line(points, line)
+    if len(line) >= 4 and line[0] == line[-1]:
+        if any(_point_in_polygon(p[0], p[1], line) for p in points):
+            return 0.0
+    return d
+
+
+def _element_distance_m(points, el):
+    """OSM要素(node/way/relation)と points の最短距離[m]。敷地内は 0。"""
+    t = el.get("type")
+    if t == "node":
+        return min(haversine_m(p[0], p[1], el["lat"], el["lon"]) for p in points)
+    if t == "way":
+        geom = el.get("geometry") or []
+        if len(geom) < 2:
+            return None
+        return _line_distance_m(points, [[g["lat"], g["lon"]] for g in geom])
+    if t == "relation":
+        best = None
+        for mem in el.get("members", []):
+            geom = mem.get("geometry") or []
+            if len(geom) < 2:
+                continue
+            d = _line_distance_m(points, [[g["lat"], g["lon"]] for g in geom])
+            if d is not None and (best is None or d < best):
+                best = d
+        return best
+    return None
 
 
 def daylight_status(lat, lon, duration_s):
