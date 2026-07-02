@@ -84,6 +84,7 @@ docs/       ドキュメント（SITL 動作確認ログ含む）
 
 認識合わせデモ（コース3卒業課題）:
 - [docs/design-decisions.md](docs/design-decisions.md) — 設計判断の記録（何を・なぜ）※まずここ
+- [docs/safety-design.md](docs/safety-design.md) — ③安全機構の設計（異常→発動フライトモードの対応表・実装ロードマップ）
 - [docs/concept-demo.md](docs/concept-demo.md) — デモの目的・背景・スコープ
 - [docs/requirements-draft.md](docs/requirements-draft.md) — 必須/追加/やらないこと
 - [docs/team-mtg-agenda.md](docs/team-mtg-agenda.md) — 次回MTGアジェンダ
