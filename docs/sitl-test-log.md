@@ -17,6 +17,7 @@ ArduPilot SITL で課題を検証した記録を残す。
 | 2026-07-01 | 頭: 住所→座標→その場所で巡回 (`src/geocode.py` + `patrol_spine.py`) | `sim_vehicle.py -v ArduCopter --no-mavproxy --custom-location=<lat,lon,0,0> -w` | `tcp:127.0.0.1:5760` | **OK（完走）** | 「名古屋城」→(35.181605,136.905495)をSITLホームにして起動→巡回中心が名古屋城座標で一致→完走。ジオコーディング統合を確認 |
 | 2026-07-01 | 1コマンド体験: 住所→SITL起動→巡回→自動片付け (`src/plan_and_fly.py`) | スクリプトが内部で自動起動 | `tcp:127.0.0.1:5760` | **OK（完走・自動片付け確認）** | `python3 src/plan_and_fly.py "名古屋城"` の1発で全工程。離陸は数秒スロットル立ち上がり後に正常上昇→4地点巡回→RTL→SITL停止まで自動。①→②が1コマンドに統合 |
 | 2026-07-02 | **UI↔ArduPilot連結**: ブラウザ→HTTP→dronekit→SITL (`src/server.py` + `flight_service.py` + `ui/app.html`) | server.py がAPI経由でSITL自動起動 | `tcp:127.0.0.1:5760` | **OK（完走・実テレメトリ確認）** | `/api/start`(名古屋城,一辺100m,高度20m)→launching→connecting→prearm→takeoff(0→20m)→AUTO巡回(wp 1→4)→RTL(20→1.5m)→done。モード遷移 STABILIZE→GUIDED→AUTO→RTL、電池 100→83%、姿勢/範囲/電池フラグを実データで取得。急旋回で姿勢フラグが一瞬 false=実測の証拠。SITLはdone後に0プロセスへ自動片付け |
+| 2026-07-02 | **③守る層 機体側安全機構の検証**: Step1 param + Step2 Lua (`safety/patrol_safety.parm` + `patrol_safety.lua`) | `sim_vehicle.py -v ArduCopter --no-mavproxy -w`、Lua を `ardupilot/scripts/` に配置、param投入後 reboot | `tcp:127.0.0.1:5760` | **OK（Lua ロード / L1 / L2 すべて確認）** | 下記「機体側安全機構の検証」参照 |
 
 ## 発見・修正（背骨テスト 2026-07-01）
 
@@ -35,6 +36,33 @@ ArduPilot SITL で課題を検証した記録を残す。
 - ⑤の「姿勢OK・範囲内」は固定文字をやめ、機体の実姿勢(±30°)・中心からの距離・電池残量で判定（親切版=Python側監視）。
   ArduPilotフライトコード側の深い拡張(③の芯, design D7/D18)は次段階。
 - 起動: `python3 src/server.py` → `http://127.0.0.1:8000`。`DRONE_CONNECT=...` で起動済みSITLに接続も可。
+
+## 機体側安全機構の検証（③守る層 / 2026-07-02）
+
+`safety/patrol_safety.lua`（Step2）＋ `safety/patrol_safety.parm`（Step1）を SITL で実動検証した。
+
+**手順**: Lua を `~/GitHub/ardupilot/scripts/` に配置 → SITL 起動 → pymavlink で parm を投入 →
+`MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN` で reboot（スクリプトはブート時ロードのため）。
+
+- **Lua ロード**: ✅ 再起動後 GCS に `PatrolSafety 0.1 loaded` (sev INFO) を確認。`SCR_ENABLE=1` は
+  reboot をまたいで保持。`get_aux_auth_id` 成功＝使用バインディングはすべて実在・有効（Lua エラー無し）。
+- **L1 離陸前ブロック（低バッテリ）**: ✅ `BATT_CAPACITY=20`(mAh) で残量を 0%(<40%) に落とし arm 試行 →
+  `COMMAND_ACK result=4 (FAILED)`／`armed=False`。拒否理由 STATUSTEXT は `Arm: <みまわり>: <電池残量が少ない>(0% …`
+  ＝自作 aux-auth のテンプレート（末尾 `(0%` は Lua の `電池残量が少ない(%d%% < %d%%)` に一致。標準チェックは
+  英語 "Battery 1 low" なので別物）。→ **aux-auth による離陸ブロックが機能**。
+- **L2 飛行中監視→自動RTL（範囲逸脱）**: ✅ 標準フェンスと切り分けるため `FENCE_ENABLE=0`（`FENCE_RADIUS=60` は
+  Lua が `Parameter` で読む）にして GUIDED でホーム北 150m へ移動。ホームから約 59m 地点（閾値 `60×DIST_FRAC(0.9)=54m` 超）で
+  自作 Lua が `巡回範囲の外に出そうです(59m > 54m) → RTLで帰還します` を送信し `vehicle:set_mode(RTL=6)` で
+  **GUIDED→RTL を自動切替**。標準フェンス無効下で RTL したので、切替の主体が自作 Lua であることを確定。
+
+**発見（要フォロー / 修正候補）**:
+- Lua が送る**日本語 GCS メッセージが文字化け**する（この pymavlink 受信経路では非ASCIIバイトが U+FFFD に置換。
+  ASCII/数値は無事）。加えて MAVLink **STATUSTEXT は 50 バイト上限**で、日本語の理由文（UTF-8で長い）が途中切れする。
+  → 運用・可読性のため、安全系メッセージは**短い ASCII 主体**にするか 50 バイト以内へ収める改善を検討
+  （機能は正常。表示だけの問題だが、操作者が理由を読めないと安全機構の意味が薄れる）。
+
+**検証時の一時変更（本番設定ではない）**: L2 隔離のため `FENCE_ENABLE=0`、閾値到達を早めるため `FENCE_RADIUS=60`（parm 既定は 150/1）。
+巡回サイズに応じた本番値は `safety/patrol_safety.parm` のとおり。
 
 ## メモ
 

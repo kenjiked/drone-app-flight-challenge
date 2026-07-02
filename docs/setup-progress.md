@@ -19,7 +19,8 @@
 | 初期ファイル構成 | ✅ 完了 | README / requirements / .gitignore / src / examples / docs |
 | 初回 commit | ✅ 完了 | "Initial project structure" (6c04bc1) |
 | GitHub repo 作成 + 初回 push | ✅ 完了 | visibility: public、branch: master |
-| SITL 起動確認 & ログ記録 | ⬜ 未完了 | 次のアクション（docs/sitl-test-log.md へ記録） |
+| SITL 起動確認 & ログ記録 | ✅ 完了 | 背骨/UI連結/③安全機構まで docs/sitl-test-log.md に記録済み |
+| ③安全機構(Lua+parm)の SITL 検証 | ✅ 完了 | 2026-07-02: Luaロード / L1離陸前ブロック / L2飛行中→自動RTL を確認（docs/sitl-test-log.md） |
 | 提出形式の確定（URL共有 or PR） | ⚠️ 要確認 | 講師に確認が必要 |
 
 ## Environment
@@ -64,7 +65,7 @@
 
 ## Next Actions
 
-1. SITL を起動確認する（`cd ~/GitHub/ardupilot && Tools/autotest/sim_vehicle.py -v ArduCopter --console --map`）
-2. `docs/sitl-test-log.md` に動作確認ログを追記する
-3. 変更を commit / push する
-4. 講師に提出形式（URL共有 / PR）を確認する
+1. ~~SITL を起動確認する~~ ✅ 完了（背骨/UI連結/③安全機構）
+2. ~~`docs/sitl-test-log.md` に動作確認ログを追記する~~ ✅ 完了
+3. 講師に提出形式（URL共有 / PR）を確認する（下記の確認文面案を使用）
+4. 【改善候補】Lua 安全メッセージの文字化け対策（STATUSTEXT 50バイト制限・非ASCII表示）。sitl-test-log.md の「発見」参照
