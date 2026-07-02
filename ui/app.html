@@ -89,6 +89,8 @@
   .tele div { background:#f8fafc; border:1px solid var(--line); border-radius:10px; padding:9px 11px; font-size:13px; }
   .tele b { display:block; font-size:16px; margin-top:2px; }
   .note { color:#94a3b8; font-size:12px; margin-top:10px; }
+  .ck { display:flex; align-items:center; gap:9px; font-size:14px; font-weight:600; color:#334155; background:#f8fafc; border:1px solid var(--line); border-radius:10px; padding:11px 13px; margin-top:8px; cursor:pointer; }
+  .ck input { width:18px; height:18px; accent-color:var(--green); }
   .phase { font-size:14px; color:#334155; margin:6px 0; min-height:20px; }
   .steps { display:flex; gap:6px; margin-top:auto; padding-top:16px; } .dot { flex:1; height:5px; border-radius:3px; background:#e2e8f0; } .dot.on { background:var(--blue); }
   .done { text-align:center; padding:24px 0; } .done .big { font-size:56px; }
@@ -155,7 +157,7 @@
       </div>
       <!-- 2 ルート作成 -->
       <div class="screen" id="s2">
-        <h2>② みまわりルートを作る</h2><p class="sub">形とサイズを決めます。地図に反映されます。</p>
+        <h2>② みまわりルートを作る</h2><p class="sub">まず地図のピンが正しい場所か確認。次に形とサイズを決めます。</p>
         <label>ルートの形</label>
         <div class="seg">
           <button id="modeSquare" class="on" onclick="setRouteMode('square')">四角</button>
@@ -196,10 +198,16 @@
       </div>
       <!-- 4 実行 -->
       <div class="screen" id="s4">
-        <h2>④ 実行</h2><p class="sub">ボタンひとつで、みまわり開始。</p>
-        <button class="btn big green" id="btnStart" onclick="startFlight()">▶ みまわりを開始</button>
+        <h2>④ 出発前のさいごの確認</h2><p class="sub">機体と周りは、画面からは見えません。目で確かめてください。</p>
+        <div id="preflight">
+          <label class="ck"><input type="checkbox" onchange="ckChanged()"> プロペラに傷・ゆるみがない</label>
+          <label class="ck"><input type="checkbox" onchange="ckChanged()"> 電池はしっかり充電した</label>
+          <label class="ck"><input type="checkbox" onchange="ckChanged()"> まわりに人・車・障害物がない</label>
+          <label class="ck"><input type="checkbox" onchange="ckChanged()"> （実機の場合）機体登録・保険を確認した</label>
+        </div>
+        <button class="btn big green" id="btnStart" onclick="startFlight()" disabled>▶ みまわりを開始</button>
         <button class="btn ghost" onclick="go(2)">ルートを見直す</button>
-        <p class="note">裏でArduPilotにミッションを送り、AUTOで飛行します。<br>（SITLの自動起動に約30秒かかります）</p>
+        <p class="note">全部チェックすると開始できます。裏でArduPilotにミッションと安全設定（フェンス等）を送り、自動で飛行します。<br>（シミュレータの起動に約30秒かかります）</p>
         <div class="steps"><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot"></i><i class="dot"></i></div>
       </div>
       <!-- 5 飛行中 -->
@@ -230,12 +238,15 @@
           <div class="aplog" id="apLog"><span class="t">ArduPilotからのメッセージがここに流れます…</span></div>
         </div>
         <button class="btn ghost" onclick="stopFlight()">中止してすぐ戻す</button>
+        <p class="note">🔒 通信が切れても、機体は自動で帰ってくる設定です（フェンス・電池の安全装置も有効）。<br>👀 画面だけでなく、機体からも目を離さないでください。</p>
         <div class="steps"><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot"></i></div>
       </div>
       <!-- 6 完了 -->
       <div class="screen" id="s6">
         <div class="done"><div class="big" id="doneIcon">✅</div><h2 id="doneTitle">みまわり完了</h2><p class="sub" id="doneSub">ドローンは無事に戻りました。</p></div>
         <div id="doneErr"></div>
+        <button class="btn" onclick="downloadLog()">📄 飛行日誌をダウンロード</button>
+        <p class="note">飛行の記録（日時・場所・高度・経過）を自動で作成しました。実機では日誌の保存が法令上必要です。</p>
         <button class="btn green" onclick="openDashboard()">一覧に戻る</button>
         <div class="steps"><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i></div>
       </div>
@@ -387,6 +398,7 @@
     // 表示直後は地図のサイズが0なので、可視化してからサイズ再計算
     ensureMap();
     setRouteMode('square');   // ルート形状を既定(四角)に戻す
+    resetChecklist();         // 出発前チェックをやり直してもらう
     setTimeout(()=>{ map.invalidateSize(); }, 80);
     window.scrollTo(0,0);
   }
@@ -575,6 +587,7 @@
   async function pollStatus(){
     let s;
     try{ s=await api('/api/status'); }catch(e){ return; }
+    lastStatus=s;   // ⑥の飛行日誌ダウンロード用に保持
     updateConn(s);
 
     document.getElementById('phaseMsg').textContent = s.message || PHASE_TEXT[s.phase] || '';
@@ -601,6 +614,50 @@
     if(s.phase==='done' || s.phase==='error'){ stopPolling(); showDone(s); }
   }
 
+  // ---- ④ 出発前チェックリスト ----
+  function ckChanged(){
+    const boxes=document.querySelectorAll('#preflight input[type=checkbox]');
+    document.getElementById('btnStart').disabled = ![...boxes].every(b=>b.checked);
+  }
+  function resetChecklist(){
+    document.querySelectorAll('#preflight input[type=checkbox]').forEach(b=>{ b.checked=false; });
+    const btn=document.getElementById('btnStart'); if(btn) btn.disabled=true;
+  }
+
+  // ---- ⑥ 飛行日誌ダウンロード ----
+  let lastStatus=null;
+  function downloadLog(){
+    const txt=(lastStatus && lastStatus.flight_log) || '';
+    if(!txt){ alert('飛行記録がまだありません。'); return; }
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([txt],{type:'text/plain;charset=utf-8'}));
+    const d=new Date(), z=n=>String(n).padStart(2,'0');
+    a.download='mimawari-log-'+d.getFullYear()+z(d.getMonth()+1)+z(d.getDate())+'-'+z(d.getHours())+z(d.getMinutes())+'.txt';
+    a.click(); URL.revokeObjectURL(a.href);
+  }
+
+  // ArduPilot/安全機構のメッセージを非エンジニア向けに翻訳（未知のものは原文のまま）
+  const EVENT_JA=[
+    [/^Reached command #?(\d+)/i, m=>'みまわり地点 '+m[1]+' に到着'],
+    [/^Mission: (\d+) WP/i,       m=>'次の地点へ向かっています（#'+m[1]+'）'],
+    [/^Arming motors/i,           ()=>'モーター始動'],
+    [/^Disarming motors/i,        ()=>'モーター停止（着地）'],
+    [/Hit ground/i,               ()=>'着地しました'],
+    [/^Fence breach/i,            ()=>'⚠ 飛行範囲（フェンス）を超えました → 自動で帰還します'],
+    [/^Battery 1 is low/i,        ()=>'⚠ 電池が少なくなりました → 自動で帰還します'],
+    [/^(PreArm|Arm): PS: batt (\d+)%<(\d+)%/i, m=>'離陸ブロック: 電池残量 '+m[2]+'%（'+m[3]+'% 必要）'],
+    [/^(PreArm|Arm): PS: no position/i,        ()=>'離陸ブロック: 位置がまだ確定していません（GPS待ち）'],
+    [/^PatrolSafety: out of range/i,           ()=>'⚠ みまわり範囲の外に出そう → 自動で帰還します'],
+    [/^PatrolSafety: battery low/i,            ()=>'⚠ 電池が少ない → 自動で帰還します'],
+    [/^PatrolSafety: attitude/i,               ()=>'⚠ 姿勢が乱れました → 自動で帰還します'],
+    [/^PatrolSafety ([\d.]+) loaded/i,         m=>'見守りスクリプト起動（v'+m[1]+'）'],
+    [/^EKF3 IMU\d+ origin set/i,               ()=>'位置の基準が確定しました'],
+  ];
+  function jaEvent(t){
+    for(const [re,f] of EVENT_JA){ const m=t.match(re); if(m) return f(m); }
+    return null;
+  }
+
   // ArduPilot 内部パネル（説明用）: 状態グリッド＋メッセージログ
   function updateApPanel(s){
     const armed=document.getElementById('apArmed');
@@ -618,8 +675,11 @@
       const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 24;
       log.innerHTML = s.events.map(function(e){
         const cls = e.sev<=2 ? 'crit' : (e.sev<=4 ? 'warn' : '');
-        return '<div class="ln"><span class="t">+'+(e.t!=null?e.t:0)+'s</span> <span class="'+cls+'">'+
-               escapeHtml(e.text)+'</span></div>';
+        const ja = jaEvent(e.text);   // 訳せるものは日本語で（原文はツールチップ）
+        const body = ja ? escapeHtml(ja) : escapeHtml(e.text);
+        const title = ja ? ' title="'+escapeHtml(e.text)+'"' : '';
+        return '<div class="ln"'+title+'><span class="t">+'+(e.t!=null?e.t:0)+'s</span> <span class="'+cls+'">'+
+               body+'</span></div>';
       }).join('');
       if(atBottom) log.scrollTop = log.scrollHeight;
     }

@@ -110,6 +110,8 @@ class FlightManager(object):
             "error": None,
             "started_at": None,
             "finished_at": None,
+            "max_alt": 0.0,        # 飛行中の最高高度(m)（飛行日誌用）
+            "flight_log": None,    # 飛行終了時に自動生成する飛行日誌テキスト
         }
 
     def _set(self, **kw):
@@ -122,10 +124,10 @@ class FlightManager(object):
             return dict(self._state)
 
     def _add_event(self, severity, text):
-        """ArduPilotからのメッセージ(STATUSTEXT等)をログに積む。直近25件を保持。"""
+        """ArduPilotからのメッセージ(STATUSTEXT等)をログに積む。直近60件を保持。"""
         with self._lock:
             evs = self._state.get("events") or []
-            evs = evs[-24:] + [{"sev": int(severity), "text": str(text),
+            evs = evs[-59:] + [{"sev": int(severity), "text": str(text),
                                 "t": round(time.time() - (self._state.get("started_at") or time.time()), 1)}]
             self._state["events"] = evs
 
@@ -133,6 +135,45 @@ class FlightManager(object):
         with self._lock:
             phase = self._state["phase"]
         return phase not in ("idle", "done", "error")
+
+    def _build_flight_log(self, result):
+        """飛行日誌（テキスト）を自動生成する。航空法で作成・保存が求められる記録の下書き。"""
+        import datetime
+        s = self.snapshot()
+
+        def fmt(ts):
+            if not ts:
+                return "-"
+            return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+
+        dur = "-"
+        if s.get("started_at") and s.get("finished_at"):
+            d = int(s["finished_at"] - s["started_at"])
+            dur = "%d分%02d秒" % (d // 60, d % 60)
+
+        lines = [
+            "みまわり自作ドローン — 飛行記録（飛行日誌）",
+            "=" * 44,
+            "飛行日時    : %s 〜 %s（%s）" % (fmt(s.get("started_at")), fmt(s.get("finished_at")), dur),
+            "飛行場所    : %s（%.6f, %.6f）" % (s.get("address") or "-",
+                                                s.get("lat") or 0.0, s.get("lon") or 0.0),
+            "離発着地点  : %.6f, %.6f" % (s.get("home_lat") or 0.0, s.get("home_lon") or 0.0),
+            "ルート      : 外周みまわり %d地点（設定: 一辺%dm・高度%dm）" % (
+                s.get("wp_total") or 0, round(s.get("side_m") or 0), round(s.get("alt_m") or 0)),
+            "最高高度    : %.1fm" % (s.get("max_alt") or 0.0),
+            "結果        : %s" % result,
+            "機体        : ArduCopter（SITLシミュレーション）",
+            "",
+            "経過（機体からの主なメッセージ）:",
+        ]
+        for e in s.get("events") or []:
+            lines.append("  +%ss  %s" % (e.get("t"), e.get("text")))
+        lines += [
+            "",
+            "※実機の飛行では、飛行日誌の作成・保存が航空法で義務付けられています。",
+            "  この記録はその下書きとして自動生成されました。",
+        ]
+        return "\n".join(lines)
 
     # ------------------------------------------------- ①住所→座標(単発, UI用)
     def geocode(self, address):
@@ -253,7 +294,8 @@ class FlightManager(object):
                 "ok": len(hit) == 0, "level": "warn",
                 "label": "重要施設・文化財の上空にかかりません",
                 "detail": "皇居・文化財などの上空にはかかりません（デモ用データ）" if not hit
-                    else ("「%s」の上空にかかります（デモ用データ）" % "、".join(hit)),
+                    else ("「%s」の上空にかかります → 飛ばすには国の許可申請（DIPS）が必要な場合があります（デモ用データ）"
+                          % "、".join(hit)),
             }
             order.append("nofly")
 
@@ -442,15 +484,18 @@ class FlightManager(object):
             if not self._stop_flag:
                 self._set(phase="done", message="みまわり完了。無事に戻りました。",
                           finished_at=time.time())
+                self._set(flight_log=self._build_flight_log("完了（予定どおり帰還）"))
             else:
                 # ユーザーが途中で中止 → 帰還させて終了(終端フェーズにする)
                 self._set(phase="done", message="中止しました。ドローンは帰還しました。",
                           finished_at=time.time())
+                self._set(flight_log=self._build_flight_log("途中で中止（自動帰還）"))
         except Exception as e:
             self._set(phase="error",
                       message="うまくいきませんでした: %s" % e,
                       error="%s\n%s" % (e, traceback.format_exc()),
                       finished_at=time.time())
+            self._set(flight_log=self._build_flight_log("異常終了: %s" % e))
         finally:
             self._cleanup()
 
@@ -486,6 +531,45 @@ class FlightManager(object):
         # 地図描画用に、実際の巡回ルートの緯度経度と地点数を状態へ入れる
         self._set(corners=route, wp_total=num_corners)
         self._add_event(6, "ミッション送信: 離陸 + 巡回%d地点 + 帰還" % num_corners)
+
+        # ③守る層 Step1 を実飛行に統合: 安全パラメータをこの計画に合わせて自動投入。
+        # フェンスは離発着地点(ホーム)中心なので、半径=ホーム→最遠地点+余裕30m で自動フィット。
+        # 高度上限も巡回高度+15m に自動フィット（設計 safety-design.md §5「統合」）。
+        self._set(message="安全設定（フェンス等）を機体に送信中…")
+        try:
+            st = self.snapshot()
+            hlat = st.get("home_lat")
+            hlon = st.get("home_lon")
+            if hlat is None or hlon is None:
+                hlat, hlon = center.lat, center.lon
+            fence_r = max(geo_safety.haversine_m(hlat, hlon, c[0], c[1]) for c in route) + 30.0
+            fence_alt = alt_m + 15.0
+            rtl_alt_m = max(alt_m, 15.0)   # 帰還は巡回高度以上で（低空で戻って衝突しない）
+            safety_params = {
+                "FENCE_ACTION": 1,                  # 超えたら自動RTL
+                "FENCE_TYPE": 3,                    # 円 + 最大高度
+                "FENCE_RADIUS": float(round(fence_r)),
+                "FENCE_ALT_MAX": float(round(fence_alt)),
+                "FENCE_ENABLE": 1,                  # 最後に有効化
+                "RTL_ALT_M": float(round(rtl_alt_m)),   # m（旧RTL_ALT[cm]は現行でRTL_ALT_M[m]に改名）
+                "FS_GCS_TIMEOUT": 10,               # 通信断とみなすまでの秒数(1Hzハートビートに余裕)
+                "FS_GCS_ENABLE": 1,                 # 通信断→自動RTL
+                "BATT_FS_LOW_ACT": 2,               # 電池低下→自動RTL
+            }
+            for k, v in safety_params.items():
+                # 既に同じ値なら設定しない（dronekit は同値設定だと確認応答を検知できず
+                # 30秒タイムアウトするため。値が違う時だけ書き込む）
+                try:
+                    cur = vehicle.parameters.get(k)
+                except Exception:
+                    cur = None
+                if cur is not None and abs(float(cur) - float(v)) < 1e-3:
+                    continue
+                vehicle.parameters[k] = v
+            self._add_event(6, "安全設定を投入: フェンス半径%dm・上限高度%dm・帰還高度%dm・通信断/電池FS有効"
+                            % (round(fence_r), round(fence_alt), round(rtl_alt_m)))
+        except Exception as e:
+            self._add_event(4, "安全設定の投入に失敗（既定設定のまま飛行）: %s" % e)
 
         # アーム→離陸
         self._set(phase="takeoff", message="離陸中…")
@@ -524,6 +608,13 @@ class FlightManager(object):
             if self._stop_flag:
                 break
             self._push_telemetry(vehicle, center, half)
+            # 安全機構(フェンス/電池FS等)が介入すると、機体側が勝手にRTL/LANDへ切り替わる。
+            # それを検知して、人に分かる言葉で画面に伝える（③守る層の見せ場）。
+            mode_name = vehicle.mode.name if vehicle.mode else ""
+            if mode_name in ("RTL", "LAND"):
+                self._add_event(4, "安全機構が作動: モードが%sに自動切替" % mode_name)
+                self._set(message="安全機構が作動しました。自動でもどっています…")
+                break
             nxt = vehicle.commands.next
             if nxt >= last_seq:
                 self._add_event(6, "巡回ミッション完了（全%d地点）" % num_corners)
@@ -541,10 +632,13 @@ class FlightManager(object):
                 break
             time.sleep(1)
 
-        # 帰還(RTL)
+        # 帰還(RTL)。安全機構が既にLANDを選んでいたら邪魔しない
         self._set(phase="rtl", message="もどっています…（自動帰還）")
-        self._add_event(6, "RTLモードへ切替: 離発着地点へ自動帰還")
-        vehicle.mode = VehicleMode("RTL")
+        cur_mode = vehicle.mode.name if vehicle.mode else ""
+        if cur_mode != "LAND":
+            if cur_mode != "RTL":
+                self._add_event(6, "RTLモードへ切替: 離発着地点へ自動帰還")
+            vehicle.mode = VehicleMode("RTL")
         t0 = time.time()
         while time.time() - t0 < 120:
             self._push_telemetry(vehicle, center, half)
@@ -595,6 +689,7 @@ class FlightManager(object):
                 mode=vehicle.mode.name if vehicle.mode else None,
                 armed=bool(vehicle.armed),
                 alt=round(alt, 1),
+                max_alt=round(max(alt, self._state.get("max_alt") or 0.0), 1),
                 battery=level,
                 attitude_ok=attitude_ok,
                 in_range=in_range,

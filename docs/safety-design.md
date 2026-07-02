@@ -108,9 +108,13 @@ UI との対応:
 
 段階的に。各段でデモに“見せ場”が増える。
 
-### Step 1 — 設定だけ（コード0行・即デモ可）
+### Step 1 — 設定だけ（コード0行・即デモ可）✅ 実飛行に統合済み（2026-07-02）
 巡回開始前に、我々のスタックからパラメータを流し込む（統合＝チームのテーマ D10/D11）。
-`patrol_spine.py`/`flight_service.py` で dronekit の `vehicle.parameters[...]=...`、または `.parm` を読み込む。
+**実装**: `flight_service._fly()` がミッション送信直後に **計画へ自動フィット**した安全設定を投入する:
+`FENCE_RADIUS = ホーム→最遠地点 + 30m`／`FENCE_ALT_MAX = 巡回高度 + 15m`／`RTL_ALT_M = 巡回高度`
+（※現行ArduPilotで旧`RTL_ALT`[cm]は`RTL_ALT_M`[m]に改名）／`FS_GCS_TIMEOUT=10, FS_GCS_ENABLE=1`／`BATT_FS_LOW_ACT=2`。
+同値のパラメータはスキップ（dronekitが同値設定でタイムアウトするため）。
+飛行中に機体が自前でRTL/LANDへ切替えたら「安全機構が作動」として検知しUIに通知する。
 
 推奨初期値（デモ用、巡回サイズ・高度に応じて計算）:
 ```
