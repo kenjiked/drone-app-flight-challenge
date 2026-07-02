@@ -27,6 +27,7 @@ from dronekit import connect, VehicleMode, LocationGlobal
 from pymavlink import mavutil
 
 # 同じ src/ 内の自作モジュールを再利用する
+import geo_safety
 from geocode import geocode
 from patrol_spine import (
     build_patrol_mission,
@@ -111,13 +112,17 @@ class FlightManager(object):
         return {"address": address, "lat": lat, "lon": lon, "source": source}
 
     # -------------------------------------------------- ③離陸前 安全チェック
-    def precheck(self, side_m, alt_m):
+    def precheck(self, side_m, alt_m, lat=None, lon=None):
         """離陸前の安全チェック(親切版)。実際の数値見積りを返す。
 
         - 電池: 巡回の総距離から推定飛行時間を出し、電池の総飛行可能時間と比べる。
-        - 範囲: 一辺が想定ジオフェンス内か。
         - 高さ: 法令・安全の上限内か。
-        すべて {ok, label, detail} で返し、UIが理由も表示できるようにする。
+        - 範囲↔フェンス整合(A): 巡回範囲の角が機体ジオフェンス内か（外部データ不要の実計算）。
+        - 空港・空域近接(B): 最寄り空港との距離（同梱座標＋haversine）。※警告(飛行は止めない)
+        - 飛行禁止ゾーン(D): サンプル禁止ポリゴンに掛かるか（点in多角形）。※警告
+        各チェックは {ok, label, detail, level} を返す。level='block' のみが飛行可否(ok)を左右し、
+        'warn' は注意喚起のみ（デモの happy-path を壊さないため）。lat/lon が無ければ位置系は省く。
+        設計: docs/safety-design.md §8。
         """
         side_m = float(side_m)
         alt_m = float(alt_m)
@@ -126,32 +131,71 @@ class FlightManager(object):
         # 概算の飛行経路長: 中心→角(対角) + 四辺 + 閉じ + 帰還(対角)
         diag = half * math.sqrt(2)
         horizontal = diag + 4 * side_m + side_m + diag
-        vertical = alt_m / CLIMB_SPEED_MPS * CRUISE_SPEED_MPS  # 上昇分を距離換算
         est_time = horizontal / CRUISE_SPEED_MPS + alt_m / CLIMB_SPEED_MPS * 2
 
         # 電池: 推定飛行時間 < 総飛行可能時間の60% なら安全(往復＋余裕)
         batt_ok = est_time < ENDURANCE_S * 0.6
+
+        # 範囲↔フェンス整合(A): 角(=半辺*√2) が Lua しきい値(FENCE_RADIUS*0.9) 以内か
+        corner_m = geo_safety.corner_distance_m(side_m)
+        fence_lim = geo_safety.fence_limit_m()
+        fence_ok = corner_m <= fence_lim
+
         checks = {
             "battery": {
-                "ok": batt_ok,
+                "ok": batt_ok, "level": "block",
                 "label": "電池は足ります（往復に十分）",
                 "detail": "推定飛行 約%d分 / 電池 約%d分（%d%%使用）" % (
                     round(est_time / 60), round(ENDURANCE_S / 60),
                     round(est_time / ENDURANCE_S * 100)),
             },
-            "range": {
-                "ok": side_m <= 260.0,
-                "label": "範囲は広すぎません",
-                "detail": "一辺 %dm（安全範囲の上限 260m）" % round(side_m),
-            },
             "altitude": {
-                "ok": 10.0 <= alt_m <= 60.0,
+                "ok": 10.0 <= alt_m <= 60.0, "level": "block",
                 "label": "高さは安全な範囲です",
                 "detail": "高度 %dm（安全範囲 10〜60m）" % round(alt_m),
             },
+            "fence": {
+                "ok": fence_ok, "level": "block",
+                "label": "範囲は機体フェンス内です",
+                "detail": ("巡回の角 %dm ≦ フェンス %dm（RTL手前）" % (round(corner_m), round(fence_lim)))
+                    if fence_ok else
+                    ("巡回の角 %dm ＞ フェンス %dm → 飛行中に自動RTLの恐れ。範囲を狭めてください"
+                     % (round(corner_m), round(fence_lim))),
+            },
         }
-        all_ok = all(c["ok"] for c in checks.values())
-        return {"ok": all_ok, "checks": checks,
+
+        # 位置ベースの評価（住所を確定していれば実施）
+        order = ["battery", "altitude", "fence"]
+        if lat is not None and lon is not None:
+            lat = float(lat); lon = float(lon)
+            near = geo_safety.nearest_airport(lat, lon)
+            if near:
+                aname, adist = near
+                airport_ok = adist >= geo_safety.AIRPORT_WARN_M
+                checks["airport"] = {
+                    "ok": airport_ok, "level": "warn",
+                    "label": "空港・空域から離れています",
+                    "detail": ("最寄り %s 約%.1fkm（%dkm圏外）" % (aname, adist / 1000.0,
+                                round(geo_safety.AIRPORT_WARN_M / 1000)))
+                        if airport_ok else
+                        ("最寄り %s 約%.1fkm → 空港周辺は飛行に許可が要る場合があります"
+                         % (aname, adist / 1000.0)),
+                }
+                order.append("airport")
+
+            points = [[lat, lon]] + geo_safety.square_corners(lat, lon, side_m)
+            hit = geo_safety.zones_hit(points)
+            checks["nofly"] = {
+                "ok": len(hit) == 0, "level": "warn",
+                "label": "飛行禁止ゾーンに掛かりません",
+                "detail": "サンプル禁止ゾーンの外です（デモ用データ）" if not hit
+                    else ("禁止ゾーンに接触: %s（デモ用データ）" % "、".join(hit)),
+            }
+            order.append("nofly")
+
+        # 飛行可否は block レベルのみで判定（warn は止めない）
+        all_ok = all(c["ok"] for c in checks.values() if c.get("level") == "block")
+        return {"ok": all_ok, "checks": checks, "order": order,
                 "est_time_s": round(est_time), "est_distance_m": round(horizontal)}
 
     # -------------------------------------------------------- ④実行(開始)

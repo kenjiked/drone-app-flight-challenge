@@ -345,45 +345,38 @@
     box.innerHTML='<p class="note">チェック中…</p>';
     btn.disabled=true;
     try{
-      const res=await api('/api/precheck',{ side, alt });
+      const body={ side, alt };
+      if(geo){ body.lat=geo.lat; body.lon=geo.lon; }   // 位置ベース評価(空港/禁止ゾーン)に必要
+      const res=await api('/api/precheck', body);
       box.innerHTML='';
-      for(const key of ['battery','range','altitude']){
-        const c=res.checks[key];
+      const order = res.order || Object.keys(res.checks);
+      for(const key of order){
+        const c=res.checks[key]; if(!c) continue;
+        const cls = c.ok ? '' : (c.level==='warn' ? ' warn' : ' ng');   // warn=橙(非ブロック) / block=赤
         const div=document.createElement('div');
-        div.className='check'+(c.ok?'':' ng');
+        div.className='check'+cls;
         div.innerHTML='<span class="i">'+(c.ok?'✓':'!')+'</span>'+
           '<span class="txt"><b>'+c.label+'</b><small>'+c.detail+'</small></span>';
         box.appendChild(div);
       }
       btn.disabled=!res.ok;
       btn.textContent=res.ok?'安全確認OK・次へ':'⚠ 計画を見直してください';
-      mockEvaluate(box, side, alt);   // 地図・法令ベースの評価(未実装)をモックで"評価している風"に見せる
+      mockEvaluate(box, side, alt);   // 残る未実装(建物高さ/地形)はモックのまま"評価している風"に
     }catch(e){
       box.innerHTML='<div class="err">チェック失敗：'+e.message+'</div>';
     }
   }
 
-  // 地図・法令ベースのルート安全性評価（設計: docs/safety-design.md §8）のモック。
-  // バックエンド未実装のため結果は擬似だが、"評価中→判定" のアニメで実装後の体験を先取りする。
-  // 一部は入力連動で"効いてる感"を出す（建物高さ=巡回高度に連動 / 範囲整合=実計算）。飛行判定には影響しない。
-  const FENCE_RADIUS_M = 150, FENCE_FRAC = 0.9;   // 機体側 safety/patrol_safety.parm と対応
+  // まだ実装していない評価（建物高さ・地形AGL＝重いデータが要る）のモック。
+  // フェンス整合・空港近接・DIDゾーンは実チェック化したので上の実チェックへ移動済み。
+  // "評価中→判定" のアニメで実装後の体験を先取りする。建物高さは巡回高度に連動。飛行判定には影響しない。
   function buildMockChecks(side, alt){
-    const cornerM = (side/2) * Math.SQRT2;              // 四角の角＝中心からの最遠距離
-    const fenceLimit = Math.round(FENCE_RADIUS_M * FENCE_FRAC);  // Luaの一歩手前しきい値(135m)
     return [
-      { label:'人口集中地区（DID）の回避', ok:true,
-        detail:'対象地点は DID（人口集中地区）の外です' },
       { label:'建物・障害物の高さ', ok: alt >= 30,       // 高度に連動して判定が変わる
         detail: alt >= 30 ? ('巡回高度 '+alt+'m は周辺建物より高い想定です')
                           : ('周辺に約30mの建物想定。高度 '+alt+'m はやや低い→上げると安全') },
-      { label:'空港・制限空域の近接', ok:true,
-        detail:'最寄りの空港・制限空域から十分に離れています' },
       { label:'地形の起伏（対地高度）', ok:true,
         detail:'地表の起伏はゆるやか。対地高度を保てる想定です' },
-      { label:'巡回範囲とジオフェンスの整合', ok: cornerM <= fenceLimit,  // ← ここは実計算
-        detail: cornerM <= fenceLimit
-          ? ('範囲はフェンス内（角 '+Math.round(cornerM)+'m ≦ '+fenceLimit+'m）')
-          : ('範囲がフェンス手前を超過（角 '+Math.round(cornerM)+'m ＞ '+fenceLimit+'m）。狭めると安全') },
     ];
   }
   function mockEvaluate(box, side, alt){
