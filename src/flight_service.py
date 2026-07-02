@@ -211,14 +211,31 @@ class FlightManager(object):
                 }
                 order.append("airport")
 
-            hit = geo_safety.zones_hit(zone_points or [[lat, lon]])
+            pts = zone_points or [[lat, lon]]
+            hit = geo_safety.zones_hit(pts)
             checks["nofly"] = {
                 "ok": len(hit) == 0, "level": "warn",
-                "label": "飛行禁止ゾーンに掛かりません",
-                "detail": "サンプル禁止ゾーンの外です（デモ用データ）" if not hit
-                    else ("禁止ゾーンに接触: %s（デモ用データ）" % "、".join(hit)),
+                "label": "重要施設・文化財にかかりません",
+                "detail": "皇居・文化財などの注意ゾーン外です（デモ用データ）" if not hit
+                    else ("注意ゾーンに接触: %s（デモ用データ）" % "、".join(hit)),
             }
             order.append("nofly")
+
+            # 鉄道の上・近接（電車の上を飛ばない）
+            rail = geo_safety.railway_near(pts)
+            if rail:
+                rname, rdist = rail
+                rail_ok = rdist >= geo_safety.RAIL_WARN_M
+                checks["railway"] = {
+                    "ok": rail_ok, "level": "warn",
+                    "label": "鉄道の上・近くを飛びません",
+                    "detail": ("最寄りの線路 %s まで約%dm（%dm以上）"
+                               % (rname, round(rdist), round(geo_safety.RAIL_WARN_M)))
+                        if rail_ok else
+                        ("線路 %s に近接 約%dm → 電車の上・近くは墜落時に危険。ルートを離してください"
+                         % (rname, round(rdist))),
+                }
+                order.append("railway")
 
         # 飛行可否は block レベルのみで判定（warn は止めない）
         all_ok = all(c["ok"] for c in checks.values() if c.get("level") == "block")

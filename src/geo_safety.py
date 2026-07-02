@@ -40,16 +40,42 @@ AIRPORTS = [
     ("熊本", 32.8373, 130.8551),
 ]
 
-# --- 飛行禁止ゾーン（サンプル・デモ用）。[名称, [[lat,lon],...]] の多角形 ---
-# ※データは "例示" 止まり。実運用は国土地理院DID等の公式ポリゴンに差し替える。
-NOFLY_ZONES = [
-    ("皇居周辺(例)", [
+# 鉄道近接の警告しきい値[m]（真上〜近接は墜落時に重大。線路からの水平距離）
+RAIL_WARN_M = 60.0
+
+# --- 注意ゾーン（サンプル・デモ用）。[名称, 種別, [[lat,lon],...]] の多角形 ---
+# 種別: "重要施設"(皇居・国会等) / "文化財"(城・寺社等)。飛行が制限・要配慮な代表例。
+# ※データは "例示" 止まり。実運用は国土地理院DID・文化財GIS等の公式データに差し替える。
+CAUTION_ZONES = [
+    ("皇居", "重要施設", [
         [35.6905, 139.7440], [35.6905, 139.7590],
         [35.6790, 139.7590], [35.6790, 139.7440],
     ]),
-    ("国会議事堂周辺(例)", [
+    ("国会議事堂", "重要施設", [
         [35.6790, 139.7420], [35.6790, 139.7490],
         [35.6730, 139.7490], [35.6730, 139.7420],
+    ]),
+    # 名古屋城（デモ既定地点＝文化財）。ジオコード結果の揺れを吸収するため広めに取る。
+    ("名古屋城", "文化財", [
+        [35.1880, 136.8970], [35.1880, 136.9080],
+        [35.1780, 136.9080], [35.1780, 136.8970],
+    ]),
+    ("二条城", "文化財", [
+        [35.0155, 135.7470], [35.0155, 135.7520],
+        [35.0125, 135.7520], [35.0125, 135.7470],
+    ]),
+]
+# 後方互換（旧名で参照するコード向け）
+NOFLY_ZONES = [(n, poly) for (n, _kind, poly) in CAUTION_ZONES]
+
+# --- 鉄道路線（サンプル・近似の折れ線）。[名称, [[lat,lon],...]] ---
+# 「電車の上」を飛ばない/近づかないための近接判定に使う。※データは例示。
+RAILWAYS = [
+    ("JR山手線/東京〜有楽町(例)", [
+        [35.6812, 139.7671], [35.6750, 139.7636], [35.6699, 139.7630],
+    ]),
+    ("JR中央本線/名古屋〜金山(例)", [
+        [35.1706, 136.8816], [35.1580, 136.8880], [35.1430, 136.8990],
     ]),
 ]
 
@@ -114,10 +140,45 @@ def _point_in_polygon(lat, lon, poly):
 
 
 def zones_hit(points):
-    """points([[lat,lon],...]) のいずれかが掛かる禁止ゾーン名の一覧。"""
+    """points([[lat,lon],...]) のいずれかが掛かる注意ゾーンの "種別:名称" 一覧。"""
     hit = []
-    for name, poly in NOFLY_ZONES:
+    for name, kind, poly in CAUTION_ZONES:
         if any(_point_in_polygon(p[0], p[1], poly) for p in points):
-            if name not in hit:
-                hit.append(name)
+            label = "%s:%s" % (kind, name)
+            if label not in hit:
+                hit.append(label)
     return hit
+
+
+def _segment_distance_m(plat, plon, alat, alon, blat, blon):
+    """点P(plat,plon) と線分AB の最短水平距離[m]。P周りの局所平面へ投影して計算。"""
+    latref = math.radians(plat)
+
+    def xy(lat, lon):
+        x = math.radians(lon - plon) * math.cos(latref) * 6371000.0
+        y = math.radians(lat - plat) * 6371000.0
+        return x, y
+
+    ax, ay = xy(alat, alon)
+    bx, by = xy(blat, blon)   # P は原点(0,0)
+    dx, dy = bx - ax, by - ay
+    seg2 = dx * dx + dy * dy
+    if seg2 == 0.0:
+        return math.hypot(ax, ay)
+    t = -(ax * dx + ay * dy) / seg2      # 原点(P)の AB 上への射影パラメータ
+    t = max(0.0, min(1.0, t))
+    cx, cy = ax + t * dx, ay + t * dy
+    return math.hypot(cx, cy)
+
+
+def railway_near(points):
+    """points([[lat,lon],...]) が最も近い鉄道までの (名称, 距離m)。線路が無ければ None。"""
+    best = None
+    for name, line in RAILWAYS:
+        for i in range(len(line) - 1):
+            a, b = line[i], line[i + 1]
+            for p in points:
+                d = _segment_distance_m(p[0], p[1], a[0], a[1], b[0], b[1])
+                if best is None or d < best[1]:
+                    best = (name, d)
+    return best
