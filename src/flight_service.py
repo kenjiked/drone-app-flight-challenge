@@ -81,10 +81,19 @@ class FlightManager(object):
             "address": None,
             "lat": None,          # 巡回中心(=住所)の緯度
             "lon": None,          # 巡回中心(=住所)の経度
+            "home_lat": None,     # 離発着地点(ホーム)の緯度
+            "home_lon": None,     # 離発着地点(ホーム)の経度
             "veh_lat": None,      # 機体の現在緯度(飛行中に更新)
             "veh_lon": None,      # 機体の現在経度(飛行中に更新)
             "corners": None,      # 巡回ルート(四角)の角の[lat,lon]リスト
             "geocode_source": None,
+            # --- ArduPilot 内部の可視化（飛行中⑤で表示） ---
+            "ekf_ok": None,       # EKF(位置推定)が健全か
+            "gps_fix": None,      # GPS fix type (3=3D fix 等)
+            "gps_sats": None,     # 捕捉衛星数
+            "armable": None,      # 離陸可能(全pre-armクリア)か
+            "sys_status": None,   # 機体システム状態(STANDBY/ACTIVE 等)
+            "events": [],         # ArduPilotからのメッセージ(STATUSTEXT)ログ
             "side_m": DEFAULT_SIDE_M,
             "alt_m": DEFAULT_ALT_M,
             "connected": False,
@@ -112,6 +121,14 @@ class FlightManager(object):
         with self._lock:
             return dict(self._state)
 
+    def _add_event(self, severity, text):
+        """ArduPilotからのメッセージ(STATUSTEXT等)をログに積む。直近25件を保持。"""
+        with self._lock:
+            evs = self._state.get("events") or []
+            evs = evs[-24:] + [{"sev": int(severity), "text": str(text),
+                                "t": round(time.time() - (self._state.get("started_at") or time.time()), 1)}]
+            self._state["events"] = evs
+
     def is_running(self):
         with self._lock:
             phase = self._state["phase"]
@@ -124,7 +141,8 @@ class FlightManager(object):
         return {"address": address, "lat": lat, "lon": lon, "source": source}
 
     # -------------------------------------------------- ③離陸前 安全チェック
-    def precheck(self, side_m, alt_m, lat=None, lon=None, corners=None):
+    def precheck(self, side_m, alt_m, lat=None, lon=None, corners=None,
+                 home_lat=None, home_lon=None):
         """離陸前の安全チェック(親切版)。実際の数値見積りを返す。
 
         - 電池: 巡回の総距離から推定飛行時間を出し、電池の総飛行可能時間と比べる。
@@ -167,6 +185,11 @@ class FlightManager(object):
 
         est_time = horizontal / CRUISE_SPEED_MPS + alt_m / CLIMB_SPEED_MPS * 2
         batt_ok = est_time < ENDURANCE_S * 0.6   # 往復＋余裕(60%)
+
+        # 離発着地点(ホーム)がエリアから離れている場合、フェンスはホーム中心なので
+        # 「ホーム→最遠点」の距離で評価する（保守的に corner_m にホーム↔中心距離を加算）。
+        if home_lat is not None and home_lon is not None and lat is not None and lon is not None:
+            corner_m += geo_safety.haversine_m(float(home_lat), float(home_lon), lat, lon)
         fence_ok = corner_m <= fence_lim
 
         checks = {
@@ -184,10 +207,12 @@ class FlightManager(object):
             },
             "fence": {
                 "ok": fence_ok, "level": "block",
-                "label": "範囲は機体フェンス内です",
-                "detail": ("巡回の角 %dm ≦ フェンス %dm（RTL手前）" % (round(corner_m), round(fence_lim)))
+                "label": "みまわり範囲は無理なく戻れる広さです",
+                "detail": ("いちばん遠い地点まで %dm（安全に戻れる目安 %dm 以内）"
+                           % (round(corner_m), round(fence_lim)))
                     if fence_ok else
-                    ("巡回の角 %dm ＞ フェンス %dm → 飛行中に自動RTLの恐れ。範囲を狭めてください"
+                    ("いちばん遠い地点が %dm（安全に戻れる目安 %dm を超過）。"
+                     "ドローンが途中で自動的に引き返してしまう恐れ → 範囲を狭めてください"
                      % (round(corner_m), round(fence_lim))),
             },
         }
@@ -221,19 +246,38 @@ class FlightManager(object):
             }
             order.append("nofly")
 
-            # 鉄道の上・近接（電車の上を飛ばない）
-            rail = geo_safety.railway_near(pts)
-            if rail:
+            # 鉄道の上・近接（電車の上を飛ばない）。実データ(OpenStreetMap)を優先し、
+            # 取得できない時だけ同梱サンプルにフォールバック（その旨を明示）。
+            search_r = max(300.0, corner_m + 200.0)
+            src = "OpenStreetMap"
+            no_rail_in_radius = False
+            try:
+                rail = geo_safety.railway_near_online(pts, lat, lon, search_r)
+                if rail is None:
+                    no_rail_in_radius = True
+            except Exception:
+                rail = geo_safety.railway_near(pts)   # オフライン等 → サンプル
+                src = "サンプル(未確認)"
+
+            if no_rail_in_radius:
+                checks["railway"] = {
+                    "ok": True, "level": "warn",
+                    "label": "鉄道の上・近くを飛びません",
+                    "detail": "半径%dm内に鉄道はありません（%s）" % (round(search_r), src),
+                }
+                order.append("railway")
+            elif rail:
                 rname, rdist = rail
                 rail_ok = rdist >= geo_safety.RAIL_WARN_M
+                note = "" if src == "OpenStreetMap" else "【%s】" % src
                 checks["railway"] = {
                     "ok": rail_ok, "level": "warn",
                     "label": "鉄道の上・近くを飛びません",
-                    "detail": ("最寄りの線路 %s まで約%dm（%dm以上）"
-                               % (rname, round(rdist), round(geo_safety.RAIL_WARN_M)))
+                    "detail": ("%s最寄りの線路「%s」まで約%dm（%dm以上）"
+                               % (note, rname, round(rdist), round(geo_safety.RAIL_WARN_M)))
                         if rail_ok else
-                        ("線路 %s に近接 約%dm → 電車の上・近くは墜落時に危険。ルートを離してください"
-                         % (rname, round(rdist))),
+                        ("%s線路「%s」に近接 約%dm → 電車の上・近くは墜落時に危険。ルートを離してください"
+                         % (note, rname, round(rdist))),
                 }
                 order.append("railway")
 
@@ -244,11 +288,13 @@ class FlightManager(object):
 
     # -------------------------------------------------------- ④実行(開始)
     def start(self, address=None, lat=None, lon=None, side_m=DEFAULT_SIDE_M,
-              alt_m=DEFAULT_ALT_M, connect_str=None, corners=None):
+              alt_m=DEFAULT_ALT_M, connect_str=None, corners=None,
+              home_lat=None, home_lon=None):
         """巡回飛行を開始する。すぐ返り、実処理は別スレッドで進む。
 
         connect_str を渡すと、既に起動済みの SITL に接続する(プレゼンで --map を見せたい時)。
-        省略時は、住所の座標をホームにして SITL を自動起動する(1コマンド体験)。
+        省略時は、離発着地点(home_lat/lon)をホームにして SITL を自動起動する。
+        home 未指定なら巡回エリア中心(住所/多角形重心)をホームにする(従来どおり)。
         corners([[lat,lon],...] 3点以上) を渡すと、四角ではなくその多角形の外周を巡回する(UI C)。
         """
         if self.is_running():
@@ -260,10 +306,13 @@ class FlightManager(object):
         self._set(side_m=float(side_m), alt_m=float(alt_m), address=address,
                   lat=lat, lon=lon, phase="geocoding", message="準備中…",
                   started_at=time.time())
+        if home_lat is not None and home_lon is not None:
+            self._set(home_lat=float(home_lat), home_lon=float(home_lon))
 
         self._thread = threading.Thread(
             target=self._run,
-            args=(address, lat, lon, float(side_m), float(alt_m), connect_str, corners),
+            args=(address, lat, lon, float(side_m), float(alt_m), connect_str, corners,
+                  home_lat, home_lon),
             daemon=True)
         self._thread.start()
         return self.snapshot()
@@ -280,7 +329,8 @@ class FlightManager(object):
         return self.snapshot()
 
     # ------------------------------------------------------ 実処理(別スレッド)
-    def _run(self, address, lat, lon, side_m, alt_m, connect_str, corners=None):
+    def _run(self, address, lat, lon, side_m, alt_m, connect_str, corners=None,
+             home_lat=None, home_lon=None):
         half = side_m / 2.0
         try:
             # 1) 住所→座標(UIが座標を渡していなければ変換)
@@ -291,7 +341,7 @@ class FlightManager(object):
             else:
                 self._set(geocode_source="ui")
 
-            # 多角形ルート(UI C)なら重心をホーム/中心に、最遠頂点距離を範囲(half相当)にする
+            # 多角形ルート(UI C)なら重心を中心に、最遠頂点距離を範囲(half相当)にする
             if corners:
                 clat = sum(c[0] for c in corners) / len(corners)
                 clon = sum(c[1] for c in corners) / len(corners)
@@ -299,13 +349,18 @@ class FlightManager(object):
                 half = max(geo_safety.haversine_m(clat, clon, c[0], c[1]) for c in corners)
                 self._set(lat=lat, lon=lon)
 
+            # 離発着地点(ホーム)。未指定ならエリア中心をホームにする。
+            hlat = home_lat if home_lat is not None else lat
+            hlon = home_lon if home_lon is not None else lon
+            self._set(home_lat=hlat, home_lon=hlon)
+
             # 2) SITL接続(既存に接続 or 自動起動)
             target = connect_str
             if target:
                 self._set(phase="connecting", message="ArduPilotに接続中…")
             else:
                 self._set(phase="launching", message="シミュレータを起動中…（約30秒）")
-                self._sitl = launch_sitl(lat, lon)
+                self._sitl = launch_sitl(hlat, hlon)   # 離発着地点をSITLホームにする
                 if not wait_for_port(SIM_HOST, SIM_PORT):
                     raise RuntimeError("シミュレータの起動に失敗しました")
                 target = CONNECT_STR
@@ -313,6 +368,11 @@ class FlightManager(object):
 
             self._vehicle = connect(target, wait_ready=True)
             self._set(connected=True)
+            # ArduPilotのメッセージ(STATUSTEXT)を購読してログ表示（③守る層の通達もここに出る）
+            self._vehicle.add_message_listener(
+                "STATUSTEXT",
+                lambda veh, name, m: self._add_event(m.severity, m.text))
+            self._add_event(6, "接続しました。ArduPilotの状態監視を開始")
 
             center = LocationGlobal(lat, lon, alt_m)
             self._fly(self._vehicle, center, half, alt_m, corners=corners)
@@ -363,9 +423,11 @@ class FlightManager(object):
             route = [[c.lat, c.lon] for c in corner_locs]
         # 地図描画用に、実際の巡回ルートの緯度経度と地点数を状態へ入れる
         self._set(corners=route, wp_total=num_corners)
+        self._add_event(6, "ミッション送信: 離陸 + 巡回%d地点 + 帰還" % num_corners)
 
         # アーム→離陸
         self._set(phase="takeoff", message="離陸中…")
+        self._add_event(6, "GUIDEDでアーム→離陸(%dm)を指示" % round(alt_m))
         vehicle.mode = VehicleMode("GUIDED")
         vehicle.armed = True
         while not vehicle.armed:
@@ -374,6 +436,7 @@ class FlightManager(object):
             self._push_telemetry(vehicle, center, half)
             time.sleep(1)
         vehicle.simple_takeoff(alt_m)
+        t0 = time.time()
         while True:
             if self._stop_flag:
                 return
@@ -381,31 +444,55 @@ class FlightManager(object):
             cur = vehicle.location.global_relative_frame.alt or 0.0
             if cur >= alt_m * 0.95:
                 break
+            if time.time() - t0 > 60:   # 無限ハング防止（60秒で上がらなければ異常）
+                raise RuntimeError("離陸できませんでした（高度が上がらない）")
             time.sleep(1)
 
         # AUTOで巡回
         self._set(phase="patrol", message="みまわり中…")
+        self._add_event(6, "AUTOモードへ切替: ミッション(巡回)を自動実行")
         vehicle.commands.next = 0
         vehicle.mode = VehicleMode("AUTO")
         last_seq = 1 + num_corners + 1   # takeoff(1) + 角(num) + 閉じ(1)
+        # 完了検出を堅牢化: 最終到達 / 最終WP付近で進捗停止 / 安全タイムアウト の三段構え
+        # （ミッション完走後に commands.next が進まず"⑤で固まる"のを防ぐ）
+        patrol_deadline = time.time() + 90 + num_corners * 45
+        prev_next, stall = -1, 0
         while True:
             if self._stop_flag:
                 break
             self._push_telemetry(vehicle, center, half)
-            if vehicle.commands.next >= last_seq:
+            nxt = vehicle.commands.next
+            if nxt >= last_seq:
+                self._add_event(6, "巡回ミッション完了（全%d地点）" % num_corners)
+                break
+            # 最終付近(全WP到達済)で進捗が10秒止まったら完了とみなす
+            if nxt == prev_next:
+                stall += 1
+            else:
+                stall, prev_next = 0, nxt
+            if nxt >= (1 + num_corners) and stall >= 10:
+                self._add_event(6, "巡回ミッション完了（最終地点で待機を検出）")
+                break
+            if time.time() > patrol_deadline:
+                self._add_event(4, "巡回がタイムアウト。安全のため帰還します")
                 break
             time.sleep(1)
 
         # 帰還(RTL)
         self._set(phase="rtl", message="帰還中(RTL)…")
+        self._add_event(6, "RTLモードへ切替: 離発着地点へ自動帰還")
         vehicle.mode = VehicleMode("RTL")
         t0 = time.time()
         while time.time() - t0 < 120:
             self._push_telemetry(vehicle, center, half)
-            cur = vehicle.location.global_relative_frame.alt or 0.0
-            if not vehicle.armed or cur < 1.5:
+            if not vehicle.armed:
+                break
+            cur = vehicle.location.global_relative_frame.alt
+            if cur is not None and cur < 1.5:   # 着地(高度が有効かつ低い)。Noneでは誤終了しない
                 break
             time.sleep(1)
+        self._add_event(6, "着地・ディスアームを確認（みまわり終了）")
 
     def _push_telemetry(self, vehicle, center, half):
         """機体の実データを読み、状態と安全判定を更新する。"""
@@ -435,6 +522,13 @@ class FlightManager(object):
             wp_index = max(0, min(wp_total, wp_next - 1))
             wp_dist = distance_to_current_waypoint(vehicle)
 
+            # ArduPilot 内部の状態（可視化用）。取得失敗は None のまま。
+            gps = vehicle.gps_0
+            try:
+                sys_status = vehicle.system_status.state if vehicle.system_status else None
+            except Exception:
+                sys_status = None
+
             self._set(
                 mode=vehicle.mode.name if vehicle.mode else None,
                 armed=bool(vehicle.armed),
@@ -447,6 +541,11 @@ class FlightManager(object):
                 wp_distance=round(wp_dist) if wp_dist is not None else None,
                 veh_lat=veh_lat,
                 veh_lon=veh_lon,
+                ekf_ok=bool(vehicle.ekf_ok) if vehicle.ekf_ok is not None else None,
+                gps_fix=gps.fix_type if gps else None,
+                gps_sats=gps.satellites_visible if gps else None,
+                armable=bool(vehicle.is_armable),
+                sys_status=sys_status,
             )
         except Exception:
             # テレメトリ取得失敗は致命的ではない。次の周回で回復を試みる。

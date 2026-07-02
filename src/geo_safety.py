@@ -172,7 +172,7 @@ def _segment_distance_m(plat, plon, alat, alon, blat, blon):
 
 
 def railway_near(points):
-    """points([[lat,lon],...]) が最も近い鉄道までの (名称, 距離m)。線路が無ければ None。"""
+    """points([[lat,lon],...]) が最も近い鉄道までの (名称, 距離m)。同梱サンプルのみ。線路が無ければ None。"""
     best = None
     for name, line in RAILWAYS:
         for i in range(len(line) - 1):
@@ -182,3 +182,54 @@ def railway_near(points):
                 if best is None or d < best[1]:
                     best = (name, d)
     return best
+
+
+def _min_dist_to_line(points, line):
+    """points と折れ線 line の最短距離[m]。"""
+    best = None
+    for i in range(len(line) - 1):
+        a, b = line[i], line[i + 1]
+        for p in points:
+            d = _segment_distance_m(p[0], p[1], a[0], a[1], b[0], b[1])
+            if best is None or d < best:
+                best = d
+    return best
+
+
+def railway_near_online(points, center_lat, center_lon, radius_m, timeout=8):
+    """OpenStreetMap(Overpass)で実際の鉄道を取得し、points からの最短 (名称, 距離m) を返す。
+    半径内に鉄道が無ければ None(=安全)。取得失敗時は例外を送出（呼び側でサンプルにフォールバック）。"""
+    import json as _json
+    import urllib.request as _req
+    import urllib.parse as _parse
+
+    r = max(200, int(radius_m))
+    # 地上路線のみ（地下鉄subwayは上空リスクが低いので除外）。tunnel=yes も後段で除外。
+    query = (
+        "[out:json][timeout:%d];"
+        '(way["railway"~"^(rail|light_rail|tram|monorail|narrow_gauge)$"]'
+        "(around:%d,%f,%f););out geom tags;" % (timeout, r, center_lat, center_lon)
+    )
+    data = _parse.urlencode({"data": query}).encode()
+    req = _req.Request("https://overpass-api.de/api/interpreter", data=data,
+                       headers={"User-Agent": "drone-app-flight-challenge/1.0"})
+    with _req.urlopen(req, timeout=timeout) as resp:
+        obj = _json.loads(resp.read().decode("utf-8"))
+
+    best = None
+    for el in obj.get("elements", []):
+        geom = el.get("geometry") or []
+        if len(geom) < 2:
+            continue
+        tags0 = el.get("tags", {})
+        if tags0.get("tunnel") in ("yes", "building_passage") or tags0.get("location") == "underground":
+            continue   # 地下・トンネルは上空リスクが低いので除外
+        line = [[g["lat"], g["lon"]] for g in geom]
+        d = _min_dist_to_line(points, line)
+        if d is None:
+            continue
+        tags = el.get("tags", {})
+        name = tags.get("name") or tags.get("railway") or "鉄道"
+        if best is None or d < best[1]:
+            best = (name, d)
+    return best   # None なら半径内に鉄道なし

@@ -72,6 +72,15 @@
   .check .tag.mock { color:#b45309; background:#fef3c7; }
   .planned-head { margin-top:16px; font-size:12px; font-weight:700; color:#64748b; display:flex; align-items:center; gap:8px; }
   .planned-head::before, .planned-head::after { content:""; flex:1; height:1px; background:#e2e8f0; }
+  .apbox { margin-top:14px; border:1px solid #e2e8f0; border-radius:11px; overflow:hidden; }
+  .aphead { background:#0f172a; color:#e2e8f0; font-size:12px; font-weight:700; padding:7px 11px; }
+  .apgrid { display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:#e2e8f0; }
+  .apgrid > div { background:#fff; padding:8px 6px; font-size:11px; color:#64748b; text-align:center; }
+  .apgrid b { display:block; font-size:14px; color:#0f172a; margin-top:2px; }
+  .apgrid b.ng { color:var(--red); } .apgrid b.ok { color:var(--green); }
+  .aplog { max-height:150px; overflow-y:auto; background:#0b1220; color:#cbd5e1; font:12px/1.5 ui-monospace,Menlo,Consolas,monospace; padding:8px 10px; }
+  .aplog .ln { white-space:pre-wrap; }
+  .aplog .warn { color:#fbbf24; } .aplog .crit { color:#f87171; } .aplog .t { color:#64748b; }
   .prog { height:12px; background:#e2e8f0; border-radius:8px; overflow:hidden; margin:12px 0; } .prog>div { height:100%; width:0%; background:var(--blue); transition:width .4s; }
   .chips { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
   .chip { background:#dcfce7; color:#166534; padding:6px 11px; border-radius:999px; font-size:12px; font-weight:600; }
@@ -166,6 +175,10 @@
         </div>
         <label style="display:block; margin-top:10px;">高さ：<b id="altval">25</b> m</label>
         <input id="alt" type="range" min="10" max="60" value="25" oninput="document.getElementById('altval').textContent=this.value">
+        <div style="margin-top:10px;">
+          <button class="btn ghost" id="btnHome" style="width:auto; padding:6px 12px;" onclick="toggleHomePlace()">🛫 離発着地点を指定</button>
+          <span class="note" id="homeNote">未指定（巡回エリア中心から発着）</span>
+        </div>
         <button class="btn green" onclick="goPrecheck()">このルートで確定</button>
         <button class="btn ghost" onclick="go(1)">場所を変える</button>
         <p class="note">四角＝手軽 ／ 多角形＝畑の形そのまま（地図をなぞる）。②実行層はどちらも同じ。</p>
@@ -205,6 +218,16 @@
           <div>次の地点まで<b id="teleDist">—</b></div>
           <div>電池<b id="teleBatt">—</b></div>
         </div>
+        <div class="apbox">
+          <div class="aphead">ArduPilot 内部（説明用ライブ表示）</div>
+          <div class="apgrid">
+            <div>アーム<b id="apArmed">—</b></div>
+            <div>EKF(位置)<b id="apEkf">—</b></div>
+            <div>GPS<b id="apGps">—</b></div>
+            <div>機体状態<b id="apSys">—</b></div>
+          </div>
+          <div class="aplog" id="apLog"><span class="t">ArduPilotからのメッセージがここに流れます…</span></div>
+        </div>
         <button class="btn ghost" onclick="stopFlight()">中止して帰還（RTL）</button>
         <div class="steps"><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot"></i></div>
       </div>
@@ -230,6 +253,10 @@
   let routeMode='square';       // 'square' | 'poly'（多角形をなぞる, UI C）
   let polyCorners=[];           // 多角形の頂点 [[lat,lon],...]
   let polyMarkers=[];           // 各頂点の地図マーカー
+  let homePoint=null;           // 離発着地点(ホーム) [lat,lon]（未設定ならエリア中心）
+  let homeMarker=null;          // 離発着地点マーカー
+  let placingHome=false;        // 離発着地点をクリック設置するモード
+  const HOME_ICON = (typeof L!=='undefined') ? L.divIcon({className:'', html:'<div style="font-size:20px;line-height:1">🛫</div>', iconSize:[22,22], iconAnchor:[11,20]}) : null;
   let trailPts=[];
   const HAS_LEAFLET = (typeof L !== 'undefined');
   const DRONE_ICON = HAS_LEAFLET ? L.divIcon({className:'', html:'<div class="droneicon">🚁</div>', iconSize:[22,22], iconAnchor:[11,11]}) : null;
@@ -256,11 +283,38 @@
     else { document.getElementById('maptag').textContent='地図をタップして角を打つ'; }
   }
   function onMapClick(e){
-    if(routeMode!=='poly' || !map) return;
+    if(!map) return;
+    if(placingHome){ setHome(e.latlng.lat, e.latlng.lng); return; }
+    if(routeMode!=='poly') return;
     polyCorners.push([e.latlng.lat, e.latlng.lng]);
     polyMarkers.push(L.circleMarker(e.latlng,
       {radius:5, color:'#2563eb', fillColor:'#2563eb', fillOpacity:1, weight:2}).addTo(map));
     redrawPoly();
+  }
+
+  // ---- 離発着地点(ホーム) ----
+  function toggleHomePlace(){
+    placingHome = !placingHome;
+    document.getElementById('btnHome').classList.toggle('on', placingHome);
+    document.getElementById('maptag').textContent = placingHome ? '地図をタップして離発着地点を置く' : '地図';
+    document.getElementById('homeNote').textContent = placingHome
+      ? '地図をタップしてください（🛫を置く）'
+      : (homePoint ? ('離発着: '+homePoint[0].toFixed(5)+', '+homePoint[1].toFixed(5)) : '未指定（巡回エリア中心から発着）');
+  }
+  function setHome(lat, lon){
+    homePoint = [lat, lon];
+    if(homeMarker && map) map.removeLayer(homeMarker);
+    homeMarker = L.marker([lat,lon], HOME_ICON?{icon:HOME_ICON}:{}).addTo(map).bindPopup('離発着地点');
+    placingHome = false;
+    document.getElementById('btnHome').classList.remove('on');
+    document.getElementById('maptag').textContent='地図';
+    document.getElementById('homeNote').textContent='離発着: '+lat.toFixed(5)+', '+lon.toFixed(5)+'（タップし直しで変更）';
+  }
+  function clearHome(){
+    homePoint=null; placingHome=false;
+    if(homeMarker && map){ map.removeLayer(homeMarker); homeMarker=null; }
+    const b=document.getElementById('btnHome'); if(b) b.classList.remove('on');
+    const n=document.getElementById('homeNote'); if(n) n.textContent='未指定（巡回エリア中心から発着）';
   }
   function redrawPoly(){
     if(routeLayer && map){ map.removeLayer(routeLayer); routeLayer=null; }
@@ -339,6 +393,7 @@
   function clearMapOverlays(){
     trailPts=[];
     clearPoly();
+    clearHome();
     for(const lyr of [centerMarker, routeLayer, droneMarker, trailLine]){
       if(lyr && map) map.removeLayer(lyr);
     }
@@ -412,6 +467,7 @@
       const body={ side, alt };
       if(geo){ body.lat=geo.lat; body.lon=geo.lon; }   // 位置ベース評価(空港/禁止ゾーン)に必要
       if(routeMode==='poly'){ body.corners=polyCorners; }   // 多角形はその実形状で評価
+      if(homePoint){ body.home_lat=homePoint[0]; body.home_lon=homePoint[1]; }  // 離発着地点
       const res=await api('/api/precheck', body);
       box.innerHTML='';
       const order = res.order || Object.keys(res.checks);
@@ -476,6 +532,7 @@
     if(geo){ body.address=geo.address; body.lat=geo.lat; body.lon=geo.lon; }
     else{ body.address=(document.getElementById('addr').value||'').trim(); }
     if(routeMode==='poly' && polyCorners.length>=3){ body.corners=polyCorners; }   // 多角形ルート
+    if(homePoint){ body.home_lat=homePoint[0]; body.home_lon=homePoint[1]; }        // 離発着地点
     try{
       await api('/api/start', body);
       trailPts=[];
@@ -495,6 +552,11 @@
   // ---- ⑤ ポーリングで実テレメトリ＋実地図表示 ----
   function startPolling(){ stopPolling(); statusTimer=setInterval(pollStatus, 1000); pollStatus(); }
   function stopPolling(){ if(statusTimer){ clearInterval(statusTimer); statusTimer=null; } }
+
+  // ArduPilotのモード名を非エンジニア向けの言葉に
+  const MODE_JA={ STABILIZE:'手動', GUIDED:'離陸・指示', AUTO:'自動みまわり中', RTL:'自動で帰還中',
+    LAND:'着陸中', LOITER:'その場で待機', BRAKE:'緊急停止', POSHOLD:'位置保持', ALT_HOLD:'高度保持' };
+  function modeJa(m){ return m ? ((MODE_JA[m]||m)+'（'+m+'）') : '—'; }
 
   const PHASE_TEXT={
     geocoding:'住所を座標に変換中…', launching:'シミュレータを起動中…（約30秒）',
@@ -527,15 +589,41 @@
     setChip('chipRange','範囲', s.in_range);
     setChip('chipBatt','電池', s.battery_ok);
 
-    document.getElementById('teleMode').textContent=s.mode||'—';
+    document.getElementById('teleMode').textContent=modeJa(s.mode);
     document.getElementById('teleAlt').textContent=(s.alt!=null?s.alt.toFixed(1)+' m':'—');
     document.getElementById('teleDist').textContent=(s.wp_distance!=null?Math.round(s.wp_distance)+' m':'—');
     document.getElementById('teleBatt').textContent=(s.battery!=null?s.battery+' %':'—');
 
     updateFlightMap(s);
+    updateApPanel(s);
 
     if(s.phase==='done' || s.phase==='error'){ stopPolling(); showDone(s); }
   }
+
+  // ArduPilot 内部パネル（説明用）: 状態グリッド＋メッセージログ
+  function updateApPanel(s){
+    const armed=document.getElementById('apArmed');
+    armed.textContent = s.armed ? 'ARMED' : 'DISARMED';
+    armed.className = s.armed ? 'ok' : '';
+    const ekf=document.getElementById('apEkf');
+    ekf.textContent = (s.ekf_ok==null)?'—':(s.ekf_ok?'OK':'NG');
+    ekf.className = (s.ekf_ok==null)?'':(s.ekf_ok?'ok':'ng');
+    document.getElementById('apGps').textContent =
+      (s.gps_fix==null)?'—':('fix'+s.gps_fix+' / '+(s.gps_sats||0)+'★');
+    document.getElementById('apSys').textContent = s.sys_status || '—';
+
+    const log=document.getElementById('apLog');
+    if(s.events && s.events.length){
+      const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 24;
+      log.innerHTML = s.events.map(function(e){
+        const cls = e.sev<=2 ? 'crit' : (e.sev<=4 ? 'warn' : '');
+        return '<div class="ln"><span class="t">+'+(e.t!=null?e.t:0)+'s</span> <span class="'+cls+'">'+
+               escapeHtml(e.text)+'</span></div>';
+      }).join('');
+      if(atBottom) log.scrollTop = log.scrollHeight;
+    }
+  }
+  function escapeHtml(x){ return String(x).replace(/[&<>]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]; }); }
 
   // 実地図に、実ルート(角)と機体の実位置(緯度経度)を描く
   function updateFlightMap(s){
