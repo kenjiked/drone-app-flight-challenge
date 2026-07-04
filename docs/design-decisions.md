@@ -101,5 +101,8 @@
 ## この決定が既存ドキュメントに与える影響
 
 - `concept-demo.md` / `requirements-draft.md` は本方針に合わせて更新済み。
-- `role-assignment-draft.md` / `presentation-outline.md` / `speaker-notes.md` / `demo-script.md` は
-  次の段階（③の形が決まった後）で、この新方針に合わせて見直す。
+- ~~`role-assignment-draft.md` / `presentation-outline.md` / `speaker-notes.md` / `demo-script.md` は
+  次の段階（③の形が決まった後）で、この新方針に合わせて見直す。~~
+  **完了（2026-07-04）**: 役割分担・発表アウトライン・発表原稿を現行製品（3階建て・実データ安全チェック・
+  安全機構の実飛行統合）に全面改訂。チームの進行方法は **[team-process.md](team-process.md)** に新設。
+  `demo-script.md` は 7/1 版の台本に現状補記を追加（最新の一気通貫デモ手順は speaker-notes.md 側）。
