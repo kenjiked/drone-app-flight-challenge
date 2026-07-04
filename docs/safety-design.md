@@ -142,9 +142,20 @@ FS_EKF_ACTION    1          # 位置喪失→LAND
   `ahrs:get_roll_rad / get_pitch_rad / get_location / get_home`, `Location:get_distance`,
   `battery:capacity_remaining_pct / voltage`, `vehicle:get_mode / set_mode`, `gcs:send_text`。
 
-### Step 3 — C++（深掘り・任意）
-学びたい箇所が定まったら：`AP_Arming_Copter.cpp` に自作 pre-arm を1つ足す（`check_failed(...)`）、
-または特定モードの `init()`/`run()` を読んで挙動を理解・微修正。design-decisions D12 の「既存に1個足して深く理解」。
+### Step 3 — C++（D24で段階メニュー化・2026-07-04）
+方針＝**再発明ではなく「学びのための下層移植」**。Luaや設定でやっていることを自分の手で
+ファームウェア本体へ降ろす。各Lvは独立にデモ可能（時間切れでも成果が残る）。
+
+| Lv | 内容 | 触る場所 | デモでの見え方 | 重さ |
+|---|---|---|---|---|
+| 1 | pre-arm自作: **フェンス必須**（本家fence_checksはフェンス無効だと素通り→みまわり機はフェンス必須という製品ポリシーを焼き込む）＋RTL_ALT整合 | `AP_Arming_Copter.cpp/.h`（`check_failed`の連鎖に追加、実装約20行） | 生GCSで雑に飛ばすと `PreArm: Mimawari: fence required` で拒否 | S〜M |
+| 1' | 独自パラメータ `MIMA_*`（しきい値のパラメータ化） | `Parameters.cpp`/`AP_Param` | GCSに自作パラメータが並ぶ | S |
+| 2 | **Lua監視のC++移植**「みまわりウォッチャー」: 範囲0.9早期RTL・電池%・姿勢をファーム内で常時監視 | Copterスケジューラタスク or `AC_Fence` 拡張 | **Luaを外してもデモ成立**＝本体に焼き込んだ証明 | M |
+| 3 | **自作モード MIMAWARI**: 既存モード(Loiter/Circle)をコピー登録し挙動を1つ変える（例: 各頂点で3秒静止し機首を中心に向ける） | `mode.h`/`mode.cpp`/`mode_mimawari.cpp` 新規 | **GCSのモード一覧に MIMAWARI が出る** | L |
+| 4(任意) | モードを完全巡回実行器へ（ミッション不要でファームが多角形を飛ぶ） | 同上＋WPNav | アプリは座標を渡すだけ | XL |
+
+- 旧SAFEWATCH（独自モードで**監視**）は不可（§0）だが、Lv3は独自モードで**飛行挙動を変える**ので正当。
+- 進め方: ardupilot 側は `mimawari-prearm` 等のブランチで作業し、差分を patch にして本リポ `safety/` に保存＋sitl-test-log に検証記録。本家PRは不要（講師確認事項）。
 
 ---
 
