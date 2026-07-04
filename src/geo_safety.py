@@ -130,8 +130,23 @@ def corner_distance_m(side_m):
 
 
 def fence_limit_m():
-    """Lua が使う一歩手前しきい値[m]（FENCE_RADIUS*0.9）。"""
+    """旧・固定しきい値[m]（FENCE_RADIUS 150×0.9=135）。デモ用 parm/Lua の初期値に対応。
+    計画チェックでは safe_return_limit_m()（理由のある導出値）を使うこと。"""
     return FENCE_RADIUS_M * FENCE_FRAC
+
+
+def safe_return_limit_m(endurance_s, cruise_mps, reserve_frac=0.4):
+    """『安全に戻れる目安』[m] — 固定値ではなく、理由のある値から導出する。
+
+    - 目視:  VLOS_WARN_M(200m)。操縦位置から機体を見失わない距離。
+    - 電池:  予備電力（reserve_frac=電池チェックで必ず残す40%）だけで、
+             最遠点からでも帰還できる距離（= endurance × reserve × cruise）。
+    の**小さい方**に FENCE_FRAC(0.9) を掛けて、ひと呼吸の余裕を持たせる
+    （自作Lua監視が硬いフェンスの一歩手前で優しくRTLする設計と同じ係数）。
+    既定値では min(200, 720s×0.4×5m/s=1440) × 0.9 = 180m。
+    """
+    batt_return_m = float(endurance_s) * float(reserve_frac) * float(cruise_mps)
+    return min(VLOS_WARN_M, batt_return_m) * FENCE_FRAC
 
 
 def nearest_airport(lat, lon):

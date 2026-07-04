@@ -199,7 +199,9 @@ class FlightManager(object):
         side_m = float(side_m)
         alt_m = float(alt_m)
         corners = _clean_corners(corners)
-        fence_lim = geo_safety.fence_limit_m()
+        # 「安全に戻れる目安」= min(目視200m, 電池の予備で帰れる距離) × 0.9（既定180m）
+        # 固定値135mをやめ、理由のある値から導出（geo_safety.safe_return_limit_m）
+        fence_lim = geo_safety.safe_return_limit_m(ENDURANCE_S, CRUISE_SPEED_MPS)
 
         if corners:
             # 多角形: 重心を中心、最遠頂点距離を範囲、周長＋往復を経路長とする
@@ -252,12 +254,12 @@ class FlightManager(object):
                 "ok": fence_ok, "level": "block",
                 "label": "みまわり範囲は無理なく戻れる広さです" if fence_ok
                          else "みまわり範囲は無理なく戻れる広さではありません",
-                "detail": ("いちばん遠い地点まで %dm（安全に戻れる目安 %dm 以内）"
-                           % (round(corner_m), round(fence_lim)))
+                "detail": ("いちばん遠い地点まで %dm ≦ 目安 %dm（目視%dmと電池の余力の小さい方×0.9で計算）"
+                           % (round(corner_m), round(fence_lim), round(geo_safety.VLOS_WARN_M)))
                     if fence_ok else
-                    ("いちばん遠い地点が %dm（安全に戻れる目安 %dm を超過）。"
+                    ("いちばん遠い地点が %dm ＞ 目安 %dm（目視%dmと電池の余力から計算）。"
                      "ドローンが途中で自動的に引き返してしまう恐れ → 範囲を狭めてください"
-                     % (round(corner_m), round(fence_lim))),
+                     % (round(corner_m), round(fence_lim), round(geo_safety.VLOS_WARN_M))),
             },
         }
 
