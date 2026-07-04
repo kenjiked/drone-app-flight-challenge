@@ -88,8 +88,7 @@ docs/       ドキュメント（SITL 動作確認ログ含む）
 - [docs/concept-demo.md](docs/concept-demo.md) — デモの目的・背景・スコープ
 - [docs/requirements-draft.md](docs/requirements-draft.md) — 必須/追加/やらないこと
 - [docs/team-process.md](docs/team-process.md) — チームの進行方法（開発の回し方・ルール・ドキュメント地図）
-- [docs/team-mtg-agenda.md](docs/team-mtg-agenda.md) — 次回MTGアジェンダ
-- [docs/role-assignment-draft.md](docs/role-assignment-draft.md) — 役割分担・ボトルネック
+- 役割分担（担当者名入り）・MTG議事録 — **非公開のチーム内リポで管理**（D23。docs内は案内スタブ）
 - [docs/demo-script.md](docs/demo-script.md) — デモ進行台本
 - [docs/presentation-outline.md](docs/presentation-outline.md) — 発表資料アウトライン
 - [docs/speaker-notes.md](docs/speaker-notes.md) — 発表・説明原稿
