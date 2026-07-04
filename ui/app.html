@@ -270,7 +270,7 @@
           </div>
           <div class="aplog" id="apLog"><span class="t">ArduPilotからのメッセージがここに流れます…</span></div>
         </div>
-        <button class="btn ghost" onclick="stopFlight()">中止してすぐ戻す</button>
+        <button class="btn ghost" id="btnStop" onclick="stopFlight()">中止してすぐ戻す</button>
         <p class="note">🔒 通信が切れても、機体は自動で帰ってくる設定です（フェンス・電池の安全装置も有効）。<br>👀 画面だけでなく、機体からも目を離さないでください。</p>
         <div class="steps"><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot on"></i><i class="dot"></i></div>
       </div>
@@ -414,13 +414,17 @@
   }
 
   // ---- 画面遷移 ----
+  let dashTimer=null;
   function openDashboard(){
     stopPolling();
     document.getElementById('view-planner').classList.remove('active');
     document.getElementById('view-dashboard').classList.add('active');
     refreshFlyBanner();   // 飛行が続いていれば「戻る」バナーを出す
+    if(dashTimer) clearInterval(dashTimer);
+    dashTimer=setInterval(refreshFlyBanner, 5000);   // 飛行終了でバナーが自動で消えるように
     window.scrollTo(0,0);
   }
+  function stopDashTimer(){ if(dashTimer){ clearInterval(dashTimer); dashTimer=null; } }
 
   // ---- 飛行中の復帰（リロード・一覧に戻った後でも⑤へ戻れる） ----
   function isFlying(s){ return s && s.phase && !['idle','done','error'].includes(s.phase); }
@@ -431,6 +435,7 @@
     }catch(e){}
   }
   function resumeFlight(){
+    stopDashTimer();
     document.getElementById('view-dashboard').classList.remove('active');
     document.getElementById('view-planner').classList.add('active');
     document.getElementById('s'+cur).classList.remove('active');
@@ -442,6 +447,7 @@
     window.scrollTo(0,0);
   }
   function openPlanner(addr){
+    stopDashTimer();
     document.getElementById('view-dashboard').classList.remove('active');
     document.getElementById('view-planner').classList.add('active');
     if(addr !== undefined) document.getElementById('addr').value = addr;
@@ -642,7 +648,16 @@
   }
 
   async function stopFlight(){
-    try{ await api('/api/stop', {}); }catch(e){}
+    // 着陸完了(done)まで40〜90秒かかるため、押した瞬間に状態が分かるようにする
+    const b=document.getElementById('btnStop');
+    b.disabled=true; b.textContent='🛬 もどしています…（着陸まで1分ほどお待ちください）';
+    try{
+      await api('/api/stop', {});
+      document.getElementById('phaseMsg').textContent='中止を受け付けました。ドローンを戻しています…';
+    }catch(e){
+      b.disabled=false; b.textContent='中止してすぐ戻す';
+      document.getElementById('phaseMsg').textContent='中止できませんでした。もう一度押してください（'+e.message+'）';
+    }
   }
 
   // ---- ⑤ ポーリングで実テレメトリ＋実地図表示 ----
@@ -671,28 +686,31 @@
     let s;
     try{ s=await api('/api/status'); }catch(e){ return; }
     lastStatus=s;   // ⑥の飛行日誌ダウンロード用に保持
-    updateConn(s);
 
-    document.getElementById('phaseMsg').textContent = s.message || PHASE_TEXT[s.phase] || '';
+    // 描画の一部が失敗しても「終了画面への遷移」だけは必ず行う
+    try{
+      updateConn(s);
+      document.getElementById('phaseMsg').textContent = s.message || PHASE_TEXT[s.phase] || '';
 
-    const phaseWeight={geocoding:5,launching:15,connecting:30,prearm:40,takeoff:50,patrol:60,rtl:92,done:100,error:100};
-    let pct=phaseWeight[s.phase]||0;
-    if(s.phase==='patrol'){ pct=60 + 30*(s.wp_index/(s.wp_total||4)); }
-    document.getElementById('progbar').style.width=pct+'%';
+      const phaseWeight={geocoding:5,launching:15,connecting:30,prearm:40,takeoff:50,patrol:60,rtl:92,done:100,error:100};
+      let pct=phaseWeight[s.phase]||0;
+      if(s.phase==='patrol'){ pct=60 + 30*(s.wp_index/(s.wp_total||4)); }
+      document.getElementById('progbar').style.width=pct+'%';
 
-    document.getElementById('wpText').textContent=(s.wp_index||0)+' / '+(s.wp_total||4);
+      document.getElementById('wpText').textContent=(s.wp_index||0)+' / '+(s.wp_total||4);
 
-    setChip('chipAtt','姿勢', s.attitude_ok);
-    setChip('chipRange','範囲', s.in_range);
-    setChip('chipBatt','電池', s.battery_ok);
+      setChip('chipAtt','姿勢', s.attitude_ok);
+      setChip('chipRange','範囲', s.in_range);
+      setChip('chipBatt','電池', s.battery_ok);
 
-    document.getElementById('teleMode').textContent=modeJa(s.mode);
-    document.getElementById('teleAlt').textContent=(s.alt!=null?s.alt.toFixed(1)+' m':'—');
-    document.getElementById('teleDist').textContent=(s.wp_distance!=null?Math.round(s.wp_distance)+' m':'—');
-    document.getElementById('teleBatt').textContent=(s.battery!=null?s.battery+' %':'—');
+      document.getElementById('teleMode').textContent=modeJa(s.mode);
+      document.getElementById('teleAlt').textContent=(s.alt!=null?s.alt.toFixed(1)+' m':'—');
+      document.getElementById('teleDist').textContent=(s.wp_distance!=null?Math.round(s.wp_distance)+' m':'—');
+      document.getElementById('teleBatt').textContent=(s.battery!=null?s.battery+' %':'—');
 
-    updateFlightMap(s);
-    updateApPanel(s);
+      updateFlightMap(s);
+      updateApPanel(s);
+    }catch(e){ console.error('render error', e); }
 
     if(s.phase==='done' || s.phase==='error'){ stopPolling(); showDone(s); }
   }
@@ -807,19 +825,21 @@
     document.getElementById('doneTitle').textContent=err?'途中で停止しました':'みまわり完了';
     document.getElementById('doneSub').textContent=err?'':'ドローンは無事に戻りました。';
     document.getElementById('doneErr').innerHTML=err?('<div class="err">'+(s.message||'')+'</div>'):'';
-    // 飛行サマリー（時間・最高高度・地点数）
-    const st=document.getElementById('doneStats');
-    let dur='—';
-    if(s.started_at && s.finished_at){
-      const d=Math.max(0, Math.round(s.finished_at - s.started_at));
-      dur=Math.floor(d/60)+'分'+String(d%60).padStart(2,'0')+'秒';
-    }
-    st.innerHTML =
-      '<div>飛行時間<b>'+dur+'</b></div>'+
-      '<div>最高高度<b>'+((s.max_alt!=null?s.max_alt:0).toFixed?s.max_alt.toFixed(1):s.max_alt)+' m</b></div>'+
-      '<div>みまわり地点<b>'+(s.wp_total||0)+' 地点</b></div>'+
-      '<div>電池残量<b>'+(s.battery!=null?s.battery+' %':'—')+'</b></div>';
-    st.style.display='grid';
+    // 飛行サマリー（時間・最高高度・地点数）※サマリー生成に失敗しても⑥へは必ず遷移する
+    try{
+      const st=document.getElementById('doneStats');
+      let dur='—';
+      if(s.started_at && s.finished_at){
+        const d=Math.max(0, Math.round(s.finished_at - s.started_at));
+        dur=Math.floor(d/60)+'分'+String(d%60).padStart(2,'0')+'秒';
+      }
+      st.innerHTML =
+        '<div>飛行時間<b>'+dur+'</b></div>'+
+        '<div>最高高度<b>'+Number(s.max_alt||0).toFixed(1)+' m</b></div>'+
+        '<div>みまわり地点<b>'+(s.wp_total||0)+' 地点</b></div>'+
+        '<div>電池残量<b>'+(s.battery!=null?s.battery+' %':'—')+'</b></div>';
+      st.style.display='grid';
+    }catch(e){ console.error('doneStats error', e); }
     go(6);
   }
 
@@ -827,7 +847,11 @@
   function go(n){
     document.getElementById('s'+cur).classList.remove('active');
     if(n>=2 && geo){ showPin(document.getElementById('addr').value, geo); showRoute(); }
-    if(n===5){ routeLayer_isServer=false; }
+    if(n===5){
+      routeLayer_isServer=false;
+      const b=document.getElementById('btnStop');   // 次の飛行に備えて中止ボタンを戻す
+      if(b){ b.disabled=false; b.textContent='中止してすぐ戻す'; }
+    }
     cur=n; document.getElementById('s'+cur).classList.add('active'); window.scrollTo(0,0);
   }
 
